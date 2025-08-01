@@ -1,9 +1,12 @@
 using Avalonia.Controls;
 using Avalonia.Threading;
+using Avalonia.Interactivity;
 using System;
 using System.Net.NetworkInformation;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
 
 namespace NetworkMonitor
 {
@@ -17,6 +20,7 @@ namespace NetworkMonitor
         private long _totalBytesReceived;
         private long _totalBytesSent;
         private string _currentPlatform;
+        private List<NetworkInterface> _availableInterfaces;
 
         public MainWindow()
         {
@@ -53,63 +57,146 @@ namespace NetworkMonitor
 
         private void InitializeNetworkMonitoring()
         {
-            FindActiveNetworkInterface();
-            
+            // 初始化计时器但不启动
             _timer = new DispatcherTimer
             {
                 Interval = TimeSpan.FromSeconds(1)
             };
             _timer.Tick += UpdateNetworkStats;
             
-            if (_activeInterface != null)
-            {
-                try
-                {
-                    var stats = GetNetworkStatistics(_activeInterface);
-                    _previousBytesReceived = stats.BytesReceived;
-                    _previousBytesSent = stats.BytesSent;
-                    _previousTime = DateTime.Now;
-                }
-                catch (Exception ex)
-                {
-                    UpdateStatusText($"初始化错误: {ex.Message}");
-                }
-            }
-            
-            _timer.Start();
+            // 加载所有网络接口
+            LoadNetworkInterfaces();
         }
 
-        private void FindActiveNetworkInterface()
+        private void LoadNetworkInterfaces()
         {
             try
             {
-                var interfaces = NetworkInterface.GetAllNetworkInterfaces()
+                _availableInterfaces = NetworkInterface.GetAllNetworkInterfaces()
                     .Where(ni => ni.OperationalStatus == OperationalStatus.Up &&
                                ni.NetworkInterfaceType != NetworkInterfaceType.Loopback &&
                                ni.NetworkInterfaceType != NetworkInterfaceType.Tunnel)
                     .OrderByDescending(ni => GetInterfacePriority(ni))
                     .ToList();
 
-                _activeInterface = interfaces.FirstOrDefault();
-                
-                if (_activeInterface != null)
+                var comboBox = this.FindControl<ComboBox>("InterfaceComboBox");
+                if (comboBox != null)
                 {
-                    var interfaceText = this.FindControl<TextBlock>("NetworkInterfaceText");
-                    if (interfaceText != null)
+                    var items = new ObservableCollection<NetworkInterfaceItem>();
+                    
+                    foreach (var ni in _availableInterfaces)
                     {
-                        var interfaceInfo = GetInterfaceDisplayName(_activeInterface);
-                        interfaceText.Text = $"网络接口: {interfaceInfo}";
+                        items.Add(new NetworkInterfaceItem
+                        {
+                            Interface = ni,
+                            DisplayName = GetInterfaceDisplayName(ni),
+                            Description = GetInterfaceDescription(ni)
+                        });
                     }
-                    UpdateStatusText("监控已启动");
+                    
+                    comboBox.ItemsSource = items;
+                    
+                    // 自动选择第一个接口
+                    if (items.Count > 0)
+                    {
+                        comboBox.SelectedIndex = 0;
+                    }
                 }
-                else
-                {
-                    UpdateStatusText("未找到可用的网络接口");
-                }
+
+                UpdateStatusText($"找到 {_availableInterfaces.Count} 个可用网络接口");
             }
             catch (Exception ex)
             {
-                UpdateStatusText($"接口检测错误: {ex.Message}");
+                UpdateStatusText($"加载网络接口错误: {ex.Message}");
+            }
+        }
+
+        private void OnInterfaceSelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            var comboBox = sender as ComboBox;
+            var selectedItem = comboBox?.SelectedItem as NetworkInterfaceItem;
+            
+            if (selectedItem != null)
+            {
+                SwitchToInterface(selectedItem.Interface);
+            }
+        }
+
+        private void OnRefreshButtonClick(object sender, RoutedEventArgs e)
+        {
+            StopMonitoring();
+            LoadNetworkInterfaces();
+        }
+
+        private void SwitchToInterface(NetworkInterface networkInterface)
+        {
+            try
+            {
+                // 停止当前监控
+                StopMonitoring();
+                
+                // 切换到新接口
+                _activeInterface = networkInterface;
+                
+                // 重置统计数据
+                ResetStatistics();
+                
+                // 获取初始数据
+                var stats = GetNetworkStatistics(_activeInterface);
+                _previousBytesReceived = stats.BytesReceived;
+                _previousBytesSent = stats.BytesSent;
+                _previousTime = DateTime.Now;
+                
+                // 更新界面显示
+                UpdateInterfaceDetails();
+                
+                // 启动监控
+                _timer.Start();
+                
+                UpdateStatusText($"正在监控: {GetInterfaceDisplayName(_activeInterface)}");
+            }
+            catch (Exception ex)
+            {
+                UpdateStatusText($"切换接口错误: {ex.Message}");
+            }
+        }
+
+        private void StopMonitoring()
+        {
+            _timer?.Stop();
+        }
+
+        private void ResetStatistics()
+        {
+            _totalBytesReceived = 0;
+            _totalBytesSent = 0;
+            _previousBytesReceived = 0;
+            _previousBytesSent = 0;
+            _previousTime = DateTime.MinValue;
+            
+            // 重置UI显示
+            var downloadSpeedText = this.FindControl<TextBlock>("DownloadSpeedText");
+            var uploadSpeedText = this.FindControl<TextBlock>("UploadSpeedText");
+            var totalDataText = this.FindControl<TextBlock>("TotalDataText");
+            
+            if (downloadSpeedText != null) downloadSpeedText.Text = "0.00 KB/s";
+            if (uploadSpeedText != null) uploadSpeedText.Text = "0.00 KB/s";
+            if (totalDataText != null) totalDataText.Text = "下载: 0 MB | 上传: 0 MB";
+        }
+
+        private void UpdateInterfaceDetails()
+        {
+            if (_activeInterface == null) return;
+            
+            var detailText = this.FindControl<TextBlock>("InterfaceDetailText");
+            if (detailText != null)
+            {
+                var speed = _activeInterface.Speed > 0 ? 
+                    $" | 速度: {FormatSpeed(_activeInterface.Speed)}" : "";
+                var status = _activeInterface.OperationalStatus;
+                var description = _activeInterface.Description;
+                
+                detailText.Text = $"接口: {description} | 状态: {status}{speed}";
             }
         }
 
@@ -142,6 +229,14 @@ namespace NetworkMonitor
             return $"{ni.Name} ({typeName})";
         }
 
+        private string GetInterfaceDescription(NetworkInterface ni)
+        {
+            var description = ni.Description;
+            if (description.Length > 50)
+                description = description.Substring(0, 47) + "...";
+            return description;
+        }
+
         private string GetFriendlyInterfaceType(NetworkInterface ni)
         {
             switch (ni.NetworkInterfaceType)
@@ -171,7 +266,6 @@ namespace NetworkMonitor
             }
         }
 
-        // 修复：使用正确的返回类型
         private IPv4InterfaceStatistics GetNetworkStatistics(NetworkInterface ni)
         {
             try
@@ -186,11 +280,7 @@ namespace NetworkMonitor
 
         private void UpdateNetworkStats(object sender, EventArgs e)
         {
-            if (_activeInterface == null)
-            {
-                FindActiveNetworkInterface();
-                return;
-            }
+            if (_activeInterface == null) return;
 
             try
             {
@@ -214,7 +304,7 @@ namespace NetworkMonitor
                     _totalBytesSent += uploadDiff;
                     
                     UpdateUI(downloadSpeed, uploadSpeed);
-                    UpdateStatusText("监控正常");
+                    UpdateStatusText($"监控正常 - {GetInterfaceDisplayName(_activeInterface)}");
                 }
                 
                 _previousBytesReceived = currentBytesReceived;
@@ -224,7 +314,8 @@ namespace NetworkMonitor
             catch (Exception ex)
             {
                 UpdateStatusText($"更新错误: {ex.Message}");
-                FindActiveNetworkInterface();
+                // 接口可能断开，刷新接口列表
+                LoadNetworkInterfaces();
             }
         }
 
@@ -289,12 +380,25 @@ namespace NetworkMonitor
 
         protected override void OnClosed(EventArgs e)
         {
-            _timer?.Stop();
+            StopMonitoring();
             base.OnClosed(e);
         }
     }
 
-    // 修复：使用正确的基类
+    // 网络接口数据模型
+    public class NetworkInterfaceItem
+    {
+        public NetworkInterface Interface { get; set; }
+        public string DisplayName { get; set; }
+        public string Description { get; set; }
+
+        public override string ToString()
+        {
+            return DisplayName;
+        }
+    }
+
+    // 空的IPv4统计类
     public class EmptyIPv4Statistics : IPv4InterfaceStatistics
     {
         public override long BytesReceived => 0;
