@@ -118,18 +118,49 @@ namespace NetworkMonitor
             var name = ni.Name.ToLower();
             var description = ni.Description.ToLower();
             
-            // Windows 特殊处理：直接排除明显的虚拟接口
+            // Windows 特殊处理
             if (_currentPlatform == "Windows")
             {
-                // 直接排除这些明显的虚拟/过滤接口
+                // 首先检查是否是常见的真正物理接口名称
+                var commonPhysicalNames = new[]
+                {
+                    // 中文 Windows 常见名称
+                    "以太网", "ethernet", "wi-fi", "wlan", "无线网络连接", "本地连接",
+                    // 英文 Windows 常见名称
+                    "local area connection", "wireless network connection",
+                    "ethernet adapter", "wireless adapter"
+                };
+                
+                bool isCommonPhysicalName = commonPhysicalNames.Any(commonName => 
+                    name == commonName || name.StartsWith(commonName + " "));
+                
+                // 如果是常见的物理接口名称，且类型匹配，直接返回 true
+                if (isCommonPhysicalName)
+                {
+                    bool isPhysicalType = (
+                        ni.NetworkInterfaceType == NetworkInterfaceType.Ethernet ||
+                        ni.NetworkInterfaceType == NetworkInterfaceType.GigabitEthernet ||
+                        ni.NetworkInterfaceType == NetworkInterfaceType.FastEthernetT ||
+                        ni.NetworkInterfaceType == NetworkInterfaceType.FastEthernetFx ||
+                        ni.NetworkInterfaceType == NetworkInterfaceType.Wireless80211
+                    );
+                    
+                    if (isPhysicalType)
+                    {
+                        return true;
+                    }
+                }
+                
+                // 排除明显的虚拟/过滤接口
                 var windowsExcludePatterns = new[]
                 {
-                    // Windows 网络过滤和虚拟组件
-                    "wfp", "npcap", "pcap", "filter", "lightweight", "miniport",
-                    "packet scheduler", "qos", "wan", "ras", "teredo", "isatap",
-                    "6to4", "tunnel", "loopback", "virtual", "vmware", "virtualbox",
-                    "hyper-v", "docker", "tap-", "vpn", "bluetooth", "infrared",
-                    "hosted network", "microsoft wi-fi direct", "native wifi filter"
+                    // Windows 网络过滤和虚拟组件（精确匹配模式）
+                    "wfp", "npcap", "pcap", "packet scheduler", "qos", 
+                    "miniport", "ras", "teredo", "isatap", "6to4", "tunnel",
+                    "vmware", "virtualbox", "hyper-v", "docker", "tap-",
+                    "bluetooth", "infrared", "hosted network", 
+                    "microsoft wi-fi direct", "native wifi filter",
+                    "lightweight filter", "wan", "vpn"
                 };
                 
                 foreach (var pattern in windowsExcludePatterns)
@@ -140,15 +171,20 @@ namespace NetworkMonitor
                     }
                 }
                 
-                // Windows 上以 WLAN- 开头的通常都是虚拟组件，除非是真正的适配器
-                if (name.StartsWith("wlan-"))
+                // 特殊处理：以 WLAN- 开头但不是简单 WLAN 的接口（这些通常是虚拟组件）
+                if (name.StartsWith("wlan-") && name != "wlan")
                 {
-                    // 只保留真正的 WLAN 适配器，排除所有过滤器和服务组件
                     return false;
                 }
                 
-                // 检查接口类型，确保是真正的物理接口
-                bool isPhysicalType = (
+                // 检查是否包含 "filter" 关键词（但要排除包含在描述中的情况）
+                if (name.Contains("filter") || description.Contains("filter"))
+                {
+                    return false;
+                }
+                
+                // 检查接口类型，确保是物理类型
+                bool isPhysicalType2 = (
                     ni.NetworkInterfaceType == NetworkInterfaceType.Ethernet ||
                     ni.NetworkInterfaceType == NetworkInterfaceType.GigabitEthernet ||
                     ni.NetworkInterfaceType == NetworkInterfaceType.FastEthernetT ||
@@ -156,23 +192,7 @@ namespace NetworkMonitor
                     ni.NetworkInterfaceType == NetworkInterfaceType.Wireless80211
                 );
                 
-                // 对于 Wi-Fi 接口，进一步验证是否是真正的适配器
-                if (ni.NetworkInterfaceType == NetworkInterfaceType.Wireless80211)
-                {
-                    // 真正的 Wi-Fi 适配器通常名称简单，如 "Wi-Fi", "WLAN", "Wireless Network Connection"
-                    // 而不是复杂的技术组件名称
-                    bool isRealWiFiAdapter = (
-                        name == "wi-fi" ||
-                        name == "wlan" ||
-                        name == "wireless network connection" ||
-                        name.StartsWith("wireless network connection") ||
-                        (name.Contains("wi-fi") && !name.Contains("-") && !name.Contains("filter") && !name.Contains("driver"))
-                    );
-                    
-                    return isRealWiFiAdapter;
-                }
-                
-                return isPhysicalType;
+                return isPhysicalType2;
             }
             
             // 其他平台的处理
