@@ -10,13 +10,13 @@
     <Grid Margin="20">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
         
         <!-- 标题栏 -->
-        <StackPanel Grid.Row="0" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,15">
+        <StackPanel Grid.Row="0" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,20">
             <TextBlock Text="🌐" FontSize="28" VerticalAlignment="Center" Margin="0,0,10,0"/>
             <StackPanel>
                 <TextBlock Text="网络速度监视器" 
@@ -31,47 +31,8 @@
             </StackPanel>
         </StackPanel>
         
-        <!-- 网络接口选择 -->
-        <Border Grid.Row="1" 
-                Background="White" 
-                CornerRadius="8" 
-                Padding="15"
-                Margin="0,0,0,15"
-                BoxShadow="0 2 4 0 #00000020">
-            <StackPanel>
-                <TextBlock Text="🔧 网络接口选择" 
-                           FontSize="16" 
-                           FontWeight="SemiBold"
-                           Margin="0,0,0,10"/>
-                <Grid>
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="10"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
-                    
-                    <ComboBox Name="InterfaceComboBox" 
-                              Grid.Column="0"
-                              PlaceholderText="选择网络接口..."
-                              SelectionChanged="OnInterfaceSelectionChanged"/>
-                    
-                    <Button Name="RefreshButton" 
-                            Grid.Column="2"
-                            Content="🔄 刷新"
-                            Padding="10,5"
-                            Click="OnRefreshButtonClick"/>
-                </Grid>
-                
-                <TextBlock Name="InterfaceDetailText" 
-                           Text="请选择网络接口开始监控"
-                           FontSize="12" 
-                           Foreground="#666"
-                           Margin="0,8,0,0"/>
-            </StackPanel>
-        </Border>
-        
         <!-- 速度显示区域 -->
-        <Grid Grid.Row="2">
+        <Grid Grid.Row="1">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="10"/>
@@ -153,26 +114,64 @@
             </Border>
         </Grid>
         
-        <!-- 底部状态信息 -->
-        <StackPanel Grid.Row="3" Margin="0,15,0,0">
-            <Border Background="White" 
-                    CornerRadius="8" 
-                    Padding="10"
-                    BoxShadow="0 2 4 0 #00000020">
-                <StackPanel>
-                    <TextBlock Name="LastUpdateText" 
-                               Text="最后更新: --:--:--" 
-                               FontSize="12" 
-                               Foreground="#666"
-                               HorizontalAlignment="Center"/>
-                    <TextBlock Name="StatusText" 
-                               Text="状态: 请选择网络接口" 
-                               FontSize="12" 
-                               Foreground="#666"
-                               HorizontalAlignment="Center"
-                               Margin="0,3,0,0"/>
-                </StackPanel>
-            </Border>
-        </StackPanel>
+        <!-- 状态信息 -->
+        <Border Grid.Row="2" 
+                Background="White" 
+                CornerRadius="8" 
+                Padding="10"
+                Margin="0,15,0,10"
+                BoxShadow="0 2 4 0 #00000020">
+            <StackPanel>
+                <TextBlock Name="LastUpdateText" 
+                           Text="最后更新: --:--:--" 
+                           FontSize="12" 
+                           Foreground="#666"
+                           HorizontalAlignment="Center"/>
+                <TextBlock Name="StatusText" 
+                           Text="状态: 请选择网络接口" 
+                           FontSize="12" 
+                           Foreground="#666"
+                           HorizontalAlignment="Center"
+                           Margin="0,3,0,0"/>
+            </StackPanel>
+        </Border>
+        
+        <!-- 网络接口选择 -->
+        <Border Grid.Row="3" 
+                Background="White" 
+                CornerRadius="8" 
+                Padding="15"
+                BoxShadow="0 2 4 0 #00000020">
+            <StackPanel>
+                <TextBlock Text="🔧 网络接口选择" 
+                           FontSize="16" 
+                           FontWeight="SemiBold"
+                           Margin="0,0,0,10"/>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="10"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    
+                    <ComboBox Name="InterfaceComboBox" 
+                              Grid.Column="0"
+                              PlaceholderText="选择网络接口..."
+                              SelectionChanged="OnInterfaceSelectionChanged"/>
+                    
+                    <Button Name="RefreshButton" 
+                            Grid.Column="2"
+                            Content="🔄 刷新"
+                            Padding="10,5"
+                            Click="OnRefreshButtonClick"/>
+                </Grid>
+                
+                <TextBlock Name="InterfaceDetailText" 
+                           Text="请选择网络接口开始监控"
+                           FontSize="12" 
+                           Foreground="#666"
+                           Margin="0,8,0,0"/>
+            </StackPanel>
+        </Border>
     </Grid>
 </Window>

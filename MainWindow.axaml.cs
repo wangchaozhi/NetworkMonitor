@@ -75,7 +75,8 @@ namespace NetworkMonitor
                 _availableInterfaces = NetworkInterface.GetAllNetworkInterfaces()
                     .Where(ni => ni.OperationalStatus == OperationalStatus.Up &&
                                ni.NetworkInterfaceType != NetworkInterfaceType.Loopback &&
-                               ni.NetworkInterfaceType != NetworkInterfaceType.Tunnel)
+                               ni.NetworkInterfaceType != NetworkInterfaceType.Tunnel &&
+                               IsPhysicalInterface(ni))
                     .OrderByDescending(ni => GetInterfacePriority(ni))
                     .ToList();
 
@@ -103,11 +104,141 @@ namespace NetworkMonitor
                     }
                 }
 
-                UpdateStatusText($"找到 {_availableInterfaces.Count} 个可用网络接口");
+                UpdateStatusText($"找到 {_availableInterfaces.Count} 个物理网络接口");
             }
             catch (Exception ex)
             {
                 UpdateStatusText($"加载网络接口错误: {ex.Message}");
+            }
+        }
+
+        private bool IsPhysicalInterface(NetworkInterface ni)
+        {
+            // 过滤掉虚拟和非物理接口
+            var name = ni.Name.ToLower();
+            var description = ni.Description.ToLower();
+            
+            // Windows 特殊处理：直接排除明显的虚拟接口
+            if (_currentPlatform == "Windows")
+            {
+                // 直接排除这些明显的虚拟/过滤接口
+                var windowsExcludePatterns = new[]
+                {
+                    // Windows 网络过滤和虚拟组件
+                    "wfp", "npcap", "pcap", "filter", "lightweight", "miniport",
+                    "packet scheduler", "qos", "wan", "ras", "teredo", "isatap",
+                    "6to4", "tunnel", "loopback", "virtual", "vmware", "virtualbox",
+                    "hyper-v", "docker", "tap-", "vpn", "bluetooth", "infrared",
+                    "hosted network", "microsoft wi-fi direct", "native wifi filter"
+                };
+                
+                foreach (var pattern in windowsExcludePatterns)
+                {
+                    if (name.Contains(pattern) || description.Contains(pattern))
+                    {
+                        return false;
+                    }
+                }
+                
+                // Windows 上以 WLAN- 开头的通常都是虚拟组件，除非是真正的适配器
+                if (name.StartsWith("wlan-"))
+                {
+                    // 只保留真正的 WLAN 适配器，排除所有过滤器和服务组件
+                    return false;
+                }
+                
+                // 检查接口类型，确保是真正的物理接口
+                bool isPhysicalType = (
+                    ni.NetworkInterfaceType == NetworkInterfaceType.Ethernet ||
+                    ni.NetworkInterfaceType == NetworkInterfaceType.GigabitEthernet ||
+                    ni.NetworkInterfaceType == NetworkInterfaceType.FastEthernetT ||
+                    ni.NetworkInterfaceType == NetworkInterfaceType.FastEthernetFx ||
+                    ni.NetworkInterfaceType == NetworkInterfaceType.Wireless80211
+                );
+                
+                // 对于 Wi-Fi 接口，进一步验证是否是真正的适配器
+                if (ni.NetworkInterfaceType == NetworkInterfaceType.Wireless80211)
+                {
+                    // 真正的 Wi-Fi 适配器通常名称简单，如 "Wi-Fi", "WLAN", "Wireless Network Connection"
+                    // 而不是复杂的技术组件名称
+                    bool isRealWiFiAdapter = (
+                        name == "wi-fi" ||
+                        name == "wlan" ||
+                        name == "wireless network connection" ||
+                        name.StartsWith("wireless network connection") ||
+                        (name.Contains("wi-fi") && !name.Contains("-") && !name.Contains("filter") && !name.Contains("driver"))
+                    );
+                    
+                    return isRealWiFiAdapter;
+                }
+                
+                return isPhysicalType;
+            }
+            
+            // 其他平台的处理
+            var excludePatterns = new[]
+            {
+                // Linux 虚拟接口
+                "veth", "br-", "docker", "virbr", "vnet", "tun", "tap", "ppp",
+                
+                // macOS 虚拟接口
+                "bridge", "p2p", "awdl", "llw", "utun", "ipsec", "gif", "stf",
+                
+                // 通用虚拟接口
+                "loopback", "virtual", "vmware", "virtualbox"
+            };
+            
+            // 检查名称和描述是否包含虚拟接口标识
+            foreach (var pattern in excludePatterns)
+            {
+                if (name.Contains(pattern) || description.Contains(pattern))
+                {
+                    return false;
+                }
+            }
+            
+            // 进一步检查接口类型
+            switch (ni.NetworkInterfaceType)
+            {
+                case NetworkInterfaceType.Loopback:
+                case NetworkInterfaceType.Tunnel:
+                case NetworkInterfaceType.Slip:
+                case NetworkInterfaceType.Isdn:
+                case NetworkInterfaceType.BasicIsdn:
+                case NetworkInterfaceType.PrimaryIsdn:
+                case NetworkInterfaceType.MultiRateSymmetricDsl:
+                case NetworkInterfaceType.RateAdaptDsl:
+                case NetworkInterfaceType.SymmetricDsl:
+                case NetworkInterfaceType.VeryHighSpeedDsl:
+                case NetworkInterfaceType.AsymmetricDsl:
+                case NetworkInterfaceType.GenericModem:
+                    return false;
+                    
+                case NetworkInterfaceType.Ethernet:
+                case NetworkInterfaceType.Wireless80211:
+                case NetworkInterfaceType.GigabitEthernet:
+                case NetworkInterfaceType.FastEthernetT:
+                case NetworkInterfaceType.FastEthernetFx:
+                    return true;
+                    
+                default:
+                    // 对于 Unknown 类型，进一步检查
+                    if (ni.NetworkInterfaceType == NetworkInterfaceType.Unknown)
+                    {
+                        // Linux 上的物理接口通常以 eth, en, wlan, wl 开头
+                        if (_currentPlatform == "Linux")
+                        {
+                            return name.StartsWith("eth") || name.StartsWith("en") || 
+                                   name.StartsWith("wlan") || name.StartsWith("wl");
+                        }
+                        // macOS 上的物理接口
+                        else if (_currentPlatform == "macOS")
+                        {
+                            return name.StartsWith("en") && !name.Contains("bridge");
+                        }
+                        return false;
+                    }
+                    return true;
             }
         }
 
@@ -355,7 +486,7 @@ namespace NetworkMonitor
             var absSpeed = Math.Abs(bytesPerSecond);
             
             if (absSpeed < 1024)
-                return $"{bytesPerSecond:F2} B/s";
+                return $"{bytesPerSecond / 1024:F2} KB/s";
             else if (absSpeed < 1024 * 1024)
                 return $"{bytesPerSecond / 1024:F2} KB/s";
             else if (absSpeed < 1024 * 1024 * 1024)
