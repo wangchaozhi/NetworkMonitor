@@ -1,0 +1,74 @@
+name: Build macOS Universal DMG
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '9.0.x'
+
+    - name: Build for osx-x64
+      run: dotnet publish NetworkMonitor.csproj -c Release -r osx-x64 --self-contained true -o publish-x64
+
+    - name: Build for osx-arm64
+      run: dotnet publish NetworkMonitor.csproj -c Release -r osx-arm64 --self-contained true -o publish-arm64
+
+    - name: Create universal binary
+      run: |
+        mkdir -p NetworkMonitor.app/Contents/MacOS
+        mkdir -p NetworkMonitor.app/Contents/Resources
+
+        # 合并主程序
+        lipo -create \
+          publish-x64/NetworkMonitor \
+          publish-arm64/NetworkMonitor \
+          -output NetworkMonitor.app/Contents/MacOS/NetworkMonitor
+
+        # 拷贝 .dylib 和其他依赖文件（从任一架构版本中取）
+        cp publish-arm64/*.dylib NetworkMonitor.app/Contents/MacOS/
+
+        # 创建 Info.plist
+        cat > NetworkMonitor.app/Contents/Info.plist <<EOF
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+         "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+          <key>CFBundleName</key>
+          <string>NetworkMonitor</string>
+          <key>CFBundleDisplayName</key>
+          <string>NetworkMonitor</string>
+          <key>CFBundleExecutable</key>
+          <string>NetworkMonitor</string>
+          <key>CFBundleIdentifier</key>
+          <string>com.example.networkmonitor</string>
+          <key>CFBundleVersion</key>
+          <string>1.0.0</string>
+          <key>CFBundlePackageType</key>
+          <string>APPL</string>
+        </dict>
+        </plist>
+        EOF
+
+    - name: Create DMG
+      run: |
+        hdiutil create -volname "NetworkMonitor" \
+          -srcfolder "NetworkMonitor.app" \
+          -ov -format UDZO NetworkMonitor-Universal.dmg
+
+    - name: Upload DMG
+      uses: actions/upload-artifact@v3
+      with:
+        name: NetworkMonitor-Universal.dmg
+        path: NetworkMonitor-Universal.dmg
