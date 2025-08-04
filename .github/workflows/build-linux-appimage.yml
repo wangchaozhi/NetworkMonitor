@@ -187,22 +187,50 @@ jobs:
             ARCH=x86_64 ./appimagetool NetworkMonitor.AppDir NetworkMonitor-x86_64.AppImage
           fi
           
-          # 重命名生成的 AppImage（统一命名）
-          if [ -f NetworkMonitor-*-x86_64.AppImage ]; then
+          # 检查生成的 AppImage 并重命名
+          echo "检查生成的 AppImage 文件:"
+          ls -la *.AppImage || echo "没有找到 AppImage 文件"
+          
+          # 统一重命名（处理不同的命名格式）
+          if [ -f NetworkMonitor-x86_64.AppImage ]; then
+            mv NetworkMonitor-x86_64.AppImage NetworkMonitor-Linux-x86_64.AppImage
+            echo "重命名: NetworkMonitor-x86_64.AppImage -> NetworkMonitor-Linux-x86_64.AppImage"
+          elif [ -f NetworkMonitor-*-x86_64.AppImage ]; then
             mv NetworkMonitor-*-x86_64.AppImage NetworkMonitor-Linux-x86_64.AppImage
+            echo "重命名: $(ls NetworkMonitor-*-x86_64.AppImage) -> NetworkMonitor-Linux-x86_64.AppImage"
           fi
+          
+          echo "最终文件:"
+          ls -la NetworkMonitor-Linux-x86_64.AppImage || echo "重命名失败"
 
       - name: Verify AppImage
         run: |
           echo "=== 验证 AppImage ==="
           
-          APPIMAGE_FILE="NetworkMonitor-Linux-x86_64.AppImage"
+          # 首先列出所有可能的 AppImage 文件
+          echo "当前目录中的所有文件："
+          ls -la *.AppImage 2>/dev/null || echo "没有找到 .AppImage 文件"
+          ls -la NetworkMonitor* 2>/dev/null || echo "没有找到 NetworkMonitor 相关文件"
           
-          if [ ! -f "$APPIMAGE_FILE" ]; then
-            echo "错误: AppImage 文件不存在"
-            ls -la *.AppImage || echo "没有找到任何 AppImage 文件"
+          # 确定实际的 AppImage 文件名
+          APPIMAGE_FILE=""
+          if [ -f "NetworkMonitor-Linux-x86_64.AppImage" ]; then
+            APPIMAGE_FILE="NetworkMonitor-Linux-x86_64.AppImage"
+          elif [ -f "NetworkMonitor-x86_64.AppImage" ]; then
+            APPIMAGE_FILE="NetworkMonitor-x86_64.AppImage"
+          else
+            # 查找任何 .AppImage 文件
+            APPIMAGE_FILE=$(ls *.AppImage 2>/dev/null | head -n 1)
+          fi
+          
+          if [ -z "$APPIMAGE_FILE" ] || [ ! -f "$APPIMAGE_FILE" ]; then
+            echo "错误: 未找到 AppImage 文件"
+            echo "当前目录内容："
+            ls -la
             exit 1
           fi
+          
+          echo "使用 AppImage 文件: $APPIMAGE_FILE"
           
           # 检查文件基本信息
           echo "文件信息:"
@@ -213,32 +241,43 @@ jobs:
           chmod +x "$APPIMAGE_FILE"
           
           # 检查 AppImage 类型
-          echo -e "\nAppImage 类型:"
-          ./"$APPIMAGE_FILE" --appimage-help || echo "可能是 Type 1 AppImage"
+          echo -e "\nAppImage 类型检查:"
+          ./"$APPIMAGE_FILE" --appimage-help 2>/dev/null || echo "可能是 Type 1 AppImage 或不支持 --appimage-help"
           
           # 提取并检查内容（不执行）
-          echo -e "\n提取 AppImage 内容进行检查:"
-          ./"$APPIMAGE_FILE" --appimage-extract-and-run echo "AppImage 可以正常提取" || {
+          echo -e "\n测试 AppImage 提取能力:"
+          ./"$APPIMAGE_FILE" --appimage-extract-and-run echo "AppImage 可以正常提取和运行" 2>/dev/null || {
             echo "尝试备选提取方法..."
-            ./"$APPIMAGE_FILE" --appimage-extract >/dev/null 2>&1 || echo "无法提取，但文件可能仍然有效"
+            ./"$APPIMAGE_FILE" --appimage-extract >/dev/null 2>&1 && echo "AppImage 可以提取内容" || echo "提取测试失败，但 AppImage 可能仍然有效"
           }
           
           # 计算校验和
           echo -e "\n校验信息:"
           echo "SHA256: $(sha256sum "$APPIMAGE_FILE" | cut -d' ' -f1)"
           echo "大小: $(stat -c%s "$APPIMAGE_FILE" | numfmt --to=iec)"
+          
+          # 将实际文件名保存到环境变量供后续步骤使用
+          echo "ACTUAL_APPIMAGE_FILE=$APPIMAGE_FILE" >> $GITHUB_ENV
 
       - name: Test AppImage (basic)
         run: |
           echo "=== 基础测试 AppImage ==="
           
-          APPIMAGE_FILE="NetworkMonitor-Linux-x86_64.AppImage"
+          APPIMAGE_FILE="${ACTUAL_APPIMAGE_FILE}"
+          
+          if [ -z "$APPIMAGE_FILE" ] || [ ! -f "$APPIMAGE_FILE" ]; then
+            echo "错误: AppImage 文件变量未设置或文件不存在"
+            exit 1
+          fi
+          
+          echo "测试文件: $APPIMAGE_FILE"
           
           # 基础启动测试（快速退出）
-          timeout 10s ./"$APPIMAGE_FILE" --help || echo "应用可能需要 GUI 环境或特定参数"
+          echo "测试应用启动（5秒超时）..."
+          timeout 5s ./"$APPIMAGE_FILE" --help 2>/dev/null || echo "应用可能需要 GUI 环境或不支持 --help 参数"
           
           # 检查是否创建了正确的临时挂载
-          echo "检查 AppImage 挂载能力..."
+          echo "测试 AppImage 挂载能力..."
           ./"$APPIMAGE_FILE" --appimage-mount &
           MOUNT_PID=$!
           sleep 2
@@ -250,7 +289,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: NetworkMonitor-Linux-x86_64-AppImage
-          path: NetworkMonitor-Linux-x86_64.AppImage
+          path: "*.AppImage"
           retention-days: 30
 
       - name: Upload AppDir (for debugging)
@@ -263,11 +302,27 @@ jobs:
       - name: Create release info
         run: |
           echo "=== 构建完成 ==="
-          APPIMAGE_FILE="NetworkMonitor-Linux-x86_64.AppImage"
           
-          echo "AppImage 文件: $APPIMAGE_FILE"
-          echo "大小: $(ls -lh "$APPIMAGE_FILE" | awk '{print $5}')"
-          echo "SHA256: $(sha256sum "$APPIMAGE_FILE" | cut -d' ' -f1)"
+          # 使用实际的 AppImage 文件
+          APPIMAGE_FILE="${ACTUAL_APPIMAGE_FILE}"
+          
+          if [ -z "$APPIMAGE_FILE" ]; then
+            # 如果环境变量未设置，尝试查找文件
+            APPIMAGE_FILE=$(ls *.AppImage 2>/dev/null | head -n 1)
+          fi
+          
+          if [ -f "$APPIMAGE_FILE" ]; then
+            echo "AppImage 文件: $APPIMAGE_FILE"
+            echo "大小: $(ls -lh "$APPIMAGE_FILE" | awk '{print $5}')"
+            echo "SHA256: $(sha256sum "$APPIMAGE_FILE" | cut -d' ' -f1)"
+          
+            FILE_SIZE=$(ls -lh "$APPIMAGE_FILE" | awk '{print $5}')
+            FILE_SHA256=$(sha256sum "$APPIMAGE_FILE" | cut -d' ' -f1)
+          else
+            echo "警告: 未找到 AppImage 文件"
+            FILE_SIZE="未知"
+            FILE_SHA256="未知"
+          fi
           
           # 创建发布信息文件
           cat > release-info-linux.txt << EOF
@@ -280,8 +335,8 @@ jobs:
           
           ## 安装和运行
           1. 下载 AppImage 文件
-          2. 设置可执行权限: \`chmod +x NetworkMonitor-Linux-x86_64.AppImage\`
-          3. 直接运行: \`./NetworkMonitor-Linux-x86_64.AppImage\`
+          2. 设置可执行权限: \`chmod +x *.AppImage\`
+          3. 直接运行: \`./NetworkMonitor*.AppImage\`
           
           ## 特性
           - 自包含，无需安装依赖
@@ -289,8 +344,9 @@ jobs:
           - 便携式，可在任何位置运行
           
           ## 文件信息
-          - 大小: $(ls -lh "$APPIMAGE_FILE" | awk '{print $5}')
-          - SHA256: $(sha256sum "$APPIMAGE_FILE" | cut -d' ' -f1)
+          - 文件名: $APPIMAGE_FILE
+          - 大小: $FILE_SIZE
+          - SHA256: $FILE_SHA256
           - 构建时间: $(date -u)
           EOF
           
