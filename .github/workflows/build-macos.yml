@@ -10,65 +10,217 @@ jobs:
     runs-on: macos-latest
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Setup .NET
-      uses: actions/setup-dotnet@v4
-      with:
-        dotnet-version: '9.0.x'
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
 
-    - name: Build for osx-x64
-      run: dotnet publish NetworkMonitor.csproj -c Release -r osx-x64 --self-contained true -o publish-x64
+      - name: Build for osx-x64
+        run: dotnet publish NetworkMonitor.csproj -c Release -r osx-x64 --self-contained true -o publish-x64
 
-    - name: Build for osx-arm64
-      run: dotnet publish NetworkMonitor.csproj -c Release -r osx-arm64 --self-contained true -o publish-arm64
+      - name: Build for osx-arm64
+        run: dotnet publish NetworkMonitor.csproj -c Release -r osx-arm64 --self-contained true -o publish-arm64
 
-    - name: Create universal binary
-      run: |
-        mkdir -p NetworkMonitor.app/Contents/MacOS
-        mkdir -p NetworkMonitor.app/Contents/Resources
+      - name: Create universal binary and app bundle
+        run: |
+          # 创建应用包结构
+          mkdir -p NetworkMonitor.app/Contents/MacOS
+          mkdir -p NetworkMonitor.app/Contents/Resources
+          
+          # 验证构建输出
+          echo "检查构建输出..."
+          ls -la publish-x64/
+          ls -la publish-arm64/
+          
+          # 合并主程序为 Universal Binary
+          echo "创建 Universal Binary..."
+          lipo -create \
+            publish-x64/NetworkMonitor \
+            publish-arm64/NetworkMonitor \
+            -output NetworkMonitor.app/Contents/MacOS/NetworkMonitor
+          
+          # 验证 Universal Binary
+          lipo -info NetworkMonitor.app/Contents/MacOS/NetworkMonitor
+          
+          # 设置可执行权限
+          chmod +x NetworkMonitor.app/Contents/MacOS/NetworkMonitor
+          
+          # 处理 .dylib 文件 - 需要为每个架构分别处理
+          echo "处理动态库..."
+          
+          # 收集所有 .dylib 文件
+          x64_dylibs=(publish-x64/*.dylib)
+          arm64_dylibs=(publish-arm64/*.dylib)
+          
+          # 为每个 .dylib 创建 Universal Binary
+          for dylib_x64 in "${x64_dylibs[@]}"; do
+            if [ -f "$dylib_x64" ]; then
+              dylib_name=$(basename "$dylib_x64")
+              dylib_arm64="publish-arm64/$dylib_name"
+          
+              if [ -f "$dylib_arm64" ]; then
+                echo "合并 $dylib_name..."
+                lipo -create "$dylib_x64" "$dylib_arm64" \
+                  -output "NetworkMonitor.app/Contents/MacOS/$dylib_name"
+              else
+                echo "警告: $dylib_name 在 ARM64 版本中不存在，仅复制 x64 版本"
+                cp "$dylib_x64" "NetworkMonitor.app/Contents/MacOS/"
+              fi
+            fi
+          done
+          
+          # 复制其他必要文件（配置文件、资源等）
+          if [ -f "publish-arm64/NetworkMonitor.runtimeconfig.json" ]; then
+            cp publish-arm64/NetworkMonitor.runtimeconfig.json NetworkMonitor.app/Contents/MacOS/
+          fi
+          
+          if [ -f "publish-arm64/NetworkMonitor.deps.json" ]; then
+            cp publish-arm64/NetworkMonitor.deps.json NetworkMonitor.app/Contents/MacOS/
+          fi
+          
+          # 复制其他资源文件
+          for file in publish-arm64/*; do
+            if [[ -f "$file" && ! "$file" =~ \.(dylib|exe)$ && ! "$file" =~ NetworkMonitor$ ]]; then
+              filename=$(basename "$file")
+              if [[ ! "$filename" =~ \.(json)$ ]]; then
+                cp "$file" "NetworkMonitor.app/Contents/MacOS/"
+              fi
+            fi
+          done
+          
+          # 创建 Info.plist
+          cat > NetworkMonitor.app/Contents/Info.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+           "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key>
+            <string>NetworkMonitor</string>
+            <key>CFBundleDisplayName</key>
+            <string>Network Monitor</string>
+            <key>CFBundleExecutable</key>
+            <string>NetworkMonitor</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.example.networkmonitor</string>
+            <key>CFBundleVersion</key>
+            <string>1.0.0</string>
+            <key>CFBundleShortVersionString</key>
+            <string>1.0.0</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleInfoDictionaryVersion</key>
+            <string>6.0</string>
+            <key>LSMinimumSystemVersion</key>
+            <string>10.15</string>
+            <key>NSHighResolutionCapable</key>
+            <true/>
+            <key>NSPrincipalClass</key>
+            <string>NSApplication</string>
+          </dict>
+          </plist>
+          EOF
+          
+          # 创建 PkgInfo 文件
+          echo "APPL????" > NetworkMonitor.app/Contents/PkgInfo
+          
+          # 验证应用包结构
+          echo "应用包结构:"
+          find NetworkMonitor.app -type f -exec ls -la {} \;
 
-        # 合并主程序
-        lipo -create \
-          publish-x64/NetworkMonitor \
-          publish-arm64/NetworkMonitor \
-          -output NetworkMonitor.app/Contents/MacOS/NetworkMonitor
+      - name: Verify app bundle
+        run: |
+          echo "验证应用包..."
+          
+          # 检查可执行文件架构
+          echo "主程序架构:"
+          file NetworkMonitor.app/Contents/MacOS/NetworkMonitor
+          lipo -info NetworkMonitor.app/Contents/MacOS/NetworkMonitor
+          
+          # 检查动态库架构
+          echo "动态库架构:"
+          for dylib in NetworkMonitor.app/Contents/MacOS/*.dylib; do
+            if [ -f "$dylib" ]; then
+              echo "$(basename "$dylib"):"
+              lipo -info "$dylib" || echo "  单架构或非Mach-O文件"
+            fi
+          done
+          
+          # 测试应用是否可以启动（仅验证，不实际运行）
+          echo "验证应用包完整性..."
+          codesign -v NetworkMonitor.app || echo "警告: 应用未签名"
 
-        # 拷贝 .dylib 和其他依赖文件（从任一架构版本中取）
-        cp publish-arm64/*.dylib NetworkMonitor.app/Contents/MacOS/
+      - name: Create enhanced DMG
+        run: |
+          # 安装 create-dmg 以获得更好的 DMG
+          brew install create-dmg
+          
+          # 创建临时文件夹用于 DMG 内容
+          mkdir -p dmg-temp
+          cp -R NetworkMonitor.app dmg-temp/
+          
+          # 创建应用程序链接
+          ln -s /Applications dmg-temp/Applications
+          
+          # 使用 create-dmg 创建美观的 DMG
+          create-dmg \
+            --volname "Network Monitor" \
+            --window-pos 200 120 \
+            --window-size 800 400 \
+            --icon-size 100 \
+            --icon "NetworkMonitor.app" 200 190 \
+            --hide-extension "NetworkMonitor.app" \
+            --app-drop-link 600 185 \
+            --hdiutil-quiet \
+            "NetworkMonitor-Universal.dmg" \
+            dmg-temp/ || \
+          {
+            echo "create-dmg 失败，使用 hdiutil 作为备选..."
+            hdiutil create -volname "Network Monitor" \
+              -srcfolder dmg-temp \
+              -ov -format UDZO NetworkMonitor-Universal.dmg
+          }
 
-        # 创建 Info.plist
-        cat > NetworkMonitor.app/Contents/Info.plist <<EOF
-        <?xml version="1.0" encoding="UTF-8"?>
-        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-         "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-        <plist version="1.0">
-        <dict>
-          <key>CFBundleName</key>
-          <string>NetworkMonitor</string>
-          <key>CFBundleDisplayName</key>
-          <string>NetworkMonitor</string>
-          <key>CFBundleExecutable</key>
-          <string>NetworkMonitor</string>
-          <key>CFBundleIdentifier</key>
-          <string>com.example.networkmonitor</string>
-          <key>CFBundleVersion</key>
-          <string>1.0.0</string>
-          <key>CFBundlePackageType</key>
-          <string>APPL</string>
-        </dict>
-        </plist>
-        EOF
+      - name: Verify DMG
+        run: |
+          echo "验证 DMG..."
+          
+          # 检查 DMG 文件
+          ls -lh NetworkMonitor-Universal.dmg
+          
+          # 验证 DMG 完整性
+          hdiutil verify NetworkMonitor-Universal.dmg
+          
+          # 测试挂载
+          echo "测试 DMG 挂载..."
+          hdiutil attach NetworkMonitor-Universal.dmg -readonly -nobrowse -mountpoint /tmp/test-mount
+          ls -la /tmp/test-mount
+          
+          # 验证应用在 DMG 中的架构
+          echo "DMG 中应用的架构:"
+          lipo -info /tmp/test-mount/NetworkMonitor.app/Contents/MacOS/NetworkMonitor
+          
+          # 卸载
+          hdiutil detach /tmp/test-mount
+          
+          # 计算哈希值
+          echo "DMG 信息:"
+          echo "SHA256: $(shasum -a 256 NetworkMonitor-Universal.dmg | cut -d' ' -f1)"
+          echo "大小: $(ls -lh NetworkMonitor-Universal.dmg | awk '{print $5}')"
 
-    - name: Create DMG
-      run: |
-        hdiutil create -volname "NetworkMonitor" \
-          -srcfolder "NetworkMonitor.app" \
-          -ov -format UDZO NetworkMonitor-Universal.dmg
+      - name: Upload DMG Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NetworkMonitor-Universal-DMG
+          path: NetworkMonitor-Universal.dmg
+          retention-days: 30
 
-    - name: Upload DMG
-      uses: actions/upload-artifact@v3
-      with:
-        name: NetworkMonitor-Universal.dmg
-        path: NetworkMonitor-Universal.dmg
+      - name: Upload App Bundle (for debugging)
+        uses: actions/upload-artifact@v4
+        with:
+          name: NetworkMonitor-App-Bundle
+          path: NetworkMonitor.app/
+          retention-days: 7
