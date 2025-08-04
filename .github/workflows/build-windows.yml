@@ -1,0 +1,341 @@
+﻿name: Build Windows Package
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_type:
+        description: '打包类型'
+        type: choice
+        default: 'portable'
+        options:
+          - 'portable'      # 便携版（文件夹）
+          - 'installer'     # 安装包
+          - 'single-file'   # 单文件版本
+          - 'all'          # 所有类型
+  push:
+    branches: [ main ]
+    paths:
+      - 'windows/**'
+      - '.github/workflows/build-windows.yml'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Install Windows build tools
+        run: |
+          # 安装 WiX Toolset (用于创建 MSI 安装包)
+          choco install wixtoolset -y
+          
+          # 安装 NSIS (备选安装包工具)
+          choco install nsis -y
+          
+          # 刷新环境变量
+          refreshenv
+
+      - name: Build .NET Applications
+        run: |
+          Write-Host "=== 构建不同版本的 Windows 应用 ==="
+          
+          # 1. 便携版 (Framework-dependent)
+          Write-Host "构建便携版..."
+          dotnet publish NetworkMonitor.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained false `
+            -o publish-portable `
+            -p:PublishSingleFile=false
+          
+          # 2. 自包含版本 (Self-contained)
+          Write-Host "构建自包含版本..."
+          dotnet publish NetworkMonitor.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -o publish-selfcontained `
+            -p:PublishSingleFile=false `
+            -p:PublishTrimmed=false
+          
+          # 3. 单文件版本 (如果需要)
+          Write-Host "构建单文件版本..."
+          dotnet publish NetworkMonitor.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -o publish-singlefile `
+            -p:PublishSingleFile=true `
+            -p:PublishTrimmed=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true
+
+      - name: Analyze build outputs
+        run: |
+          Write-Host "=== 分析构建输出 ==="
+          
+          Write-Host "便携版内容:"
+          Get-ChildItem publish-portable | Format-Table Name, Length, LastWriteTime
+          
+          Write-Host "`n自包含版本内容:"
+          Get-ChildItem publish-selfcontained | Format-Table Name, Length, LastWriteTime
+          
+          Write-Host "`n单文件版本内容:"
+          Get-ChildItem publish-singlefile | Format-Table Name, Length, LastWriteTime
+          
+          # 计算总大小
+          $portableSize = (Get-ChildItem publish-portable -Recurse | Measure-Object -Property Length -Sum).Sum
+          $selfcontainedSize = (Get-ChildItem publish-selfcontained -Recurse | Measure-Object -Property Length -Sum).Sum
+          $singlefileSize = (Get-ChildItem publish-singlefile -Recurse | Measure-Object -Property Length -Sum).Sum
+          
+          Write-Host "`n版本大小对比:"
+          Write-Host "便携版: $([math]::Round($portableSize/1MB, 2)) MB"
+          Write-Host "自包含版: $([math]::Round($selfcontainedSize/1MB, 2)) MB" 
+          Write-Host "单文件版: $([math]::Round($singlefileSize/1MB, 2)) MB"
+
+      - name: Create portable package
+        run: |
+          Write-Host "=== 创建便携版包 ==="
+          
+          # 创建便携版文件夹结构
+          New-Item -ItemType Directory -Path "NetworkMonitor-Portable" -Force
+          
+          # 复制应用文件
+          Copy-Item -Path "publish-selfcontained\*" -Destination "NetworkMonitor-Portable\" -Recurse
+          
+          # 创建启动脚本
+          @"
+          @echo off
+          cd /d "%~dp0"
+          echo Starting Network Monitor...
+          NetworkMonitor.exe %*
+          if errorlevel 1 (
+              echo.
+              echo Error occurred. Press any key to exit...
+              pause >nul
+          )
+          "@ | Out-File -FilePath "NetworkMonitor-Portable\start.bat" -Encoding ASCII
+          
+          # 创建配置文件
+          @"
+          # NetworkMonitor 便携版
+          
+          ## 系统要求
+          - Windows 10/11 (x64)
+          - .NET 9.0 Runtime (自包含版本已包含)
+          
+          ## 使用方法
+          1. 解压到任意目录
+          2. 双击 NetworkMonitor.exe 或 start.bat
+          3. 无需安装，可直接运行
+          
+          ## 文件说明
+          - NetworkMonitor.exe: 主程序
+          - *.dll: 依赖库文件
+          - start.bat: 启动脚本
+          - 配置文件会保存在用户目录下
+          
+          构建时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')
+          "@ | Out-File -FilePath "NetworkMonitor-Portable\README.txt" -Encoding UTF8
+          
+          # 创建 ZIP 包
+          Compress-Archive -Path "NetworkMonitor-Portable\*" -DestinationPath "NetworkMonitor-Windows-Portable.zip" -Force
+
+      - name: Create installer package
+        if: inputs.package_type == 'installer' || inputs.package_type == 'all' || github.event_name == 'push'
+        run: |
+          Write-Host "=== 创建安装包 ==="
+          
+          # 创建 WiX 配置文件
+          $wixConfig = @"
+          <?xml version="1.0" encoding="UTF-8"?>
+          <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+            <Product Id="*" Name="Network Monitor" Language="1033" Version="1.0.0.0" 
+                     Manufacturer="Your Company" UpgradeCode="12345678-1234-1234-1234-123456789012">
+          
+              <Package InstallerVersion="200" Compressed="yes" InstallScope="perMachine" />
+              <MajorUpgrade DowngradeErrorMessage="A newer version is already installed." />
+              <MediaTemplate EmbedCab="yes" />
+          
+              <Feature Id="ProductFeature" Title="Network Monitor" Level="1">
+                <ComponentGroupRef Id="ProductComponents" />
+              </Feature>
+          
+              <Directory Id="TARGETDIR" Name="SourceDir">
+                <Directory Id="ProgramFilesFolder">
+                  <Directory Id="INSTALLFOLDER" Name="NetworkMonitor" />
+                </Directory>
+                <Directory Id="ProgramMenuFolder">
+                  <Directory Id="ApplicationProgramsFolder" Name="Network Monitor"/>
+                </Directory>
+              </Directory>
+          
+              <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
+                <Component Id="MainExecutable">
+                  <File Id="NetworkMonitorExe" Source="publish-selfcontained\NetworkMonitor.exe" 
+                        KeyPath="yes" Checksum="yes">
+                    <Shortcut Id="ApplicationStartMenuShortcut" 
+                             Directory="ApplicationProgramsFolder"
+                             Name="Network Monitor" 
+                             Description="Network monitoring application"
+                             WorkingDirectory="INSTALLFOLDER" />
+                  </File>
+                </Component>
+              </ComponentGroup>
+          
+            </Product>
+          </Wix>
+          "@
+          
+          $wixConfig | Out-File -FilePath "installer.wxs" -Encoding UTF8
+          
+          try {
+            # 编译 WiX 项目
+            & "C:\Program Files (x86)\WiX Toolset v3.11\bin\candle.exe" installer.wxs
+            & "C:\Program Files (x86)\WiX Toolset v3.11\bin\light.exe" installer.wixobj -o "NetworkMonitor-Setup.msi"
+          
+            Write-Host "MSI 安装包创建成功"
+          } catch {
+            Write-Host "WiX 安装包创建失败，尝试使用 NSIS..."
+          
+            # 备选：使用 NSIS 创建安装包
+            $nsisScript = @"
+          !define APPNAME "Network Monitor"
+          !define COMPANYNAME "Your Company"
+          !define DESCRIPTION "Network monitoring application"
+          !define VERSIONMAJOR 1
+          !define VERSIONMINOR 0
+          !define VERSIONBUILD 0
+          
+          Name "`${APPNAME}"
+          OutFile "NetworkMonitor-Setup.exe"
+          InstallDir "`$PROGRAMFILES64\`${APPNAME}"
+          
+          Section "install"
+            SetOutPath "`$INSTDIR"
+            File /r "publish-selfcontained\*"
+          
+            CreateDirectory "`$SMPROGRAMS\`${APPNAME}"
+            CreateShortCut "`$SMPROGRAMS\`${APPNAME}\`${APPNAME}.lnk" "`$INSTDIR\NetworkMonitor.exe"
+            CreateShortCut "`$DESKTOP\`${APPNAME}.lnk" "`$INSTDIR\NetworkMonitor.exe"
+          
+            WriteUninstaller "`$INSTDIR\uninstall.exe"
+          SectionEnd
+          
+          Section "uninstall"
+            Delete "`$INSTDIR\*.*"
+            RMDir /r "`$INSTDIR"
+            Delete "`$SMPROGRAMS\`${APPNAME}\*.*"
+            RMDir "`$SMPROGRAMS\`${APPNAME}"
+            Delete "`$DESKTOP\`${APPNAME}.lnk"
+          SectionEnd
+          "@
+          
+            $nsisScript | Out-File -FilePath "installer.nsi" -Encoding UTF8
+            & "C:\Program Files (x86)\NSIS\makensis.exe" installer.nsi
+          }
+
+      - name: Create single-file package
+        if: inputs.package_type == 'single-file' || inputs.package_type == 'all'
+        run: |
+          Write-Host "=== 创建单文件包 ==="
+          
+          # 单文件版本通常只有一个 .exe 文件
+          $singleFile = Get-ChildItem "publish-singlefile\NetworkMonitor.exe"
+          
+          if ($singleFile) {
+            Copy-Item $singleFile.FullName "NetworkMonitor-SingleFile.exe"
+          
+            Write-Host "单文件版本信息:"
+            Write-Host "文件大小: $([math]::Round($singleFile.Length/1MB, 2)) MB"
+            Write-Host "包含运行时: 是"
+            Write-Host "依赖: 无 (完全自包含)"
+          }
+
+      - name: Verify packages
+        run: |
+          Write-Host "=== 验证所有包 ==="
+          
+          # 列出所有生成的包
+          Get-ChildItem -Name "*.zip", "*.msi", "*.exe" | ForEach-Object {
+            $file = Get-Item $_
+            Write-Host "$($file.Name): $([math]::Round($file.Length/1MB, 2)) MB"
+          }
+          
+          # 测试便携版可执行性
+          Write-Host "`n测试便携版启动..."
+          $process = Start-Process -FilePath "NetworkMonitor-Portable\NetworkMonitor.exe" -ArgumentList "--help" -Wait -PassThru -WindowStyle Hidden
+          Write-Host "便携版退出码: $($process.ExitCode)"
+
+      - name: Upload Portable Package
+        uses: actions/upload-artifact@v4
+        with:
+          name: NetworkMonitor-Windows-Portable
+          path: NetworkMonitor-Windows-Portable.zip
+          retention-days: 30
+
+      - name: Upload Installer
+        if: inputs.package_type == 'installer' || inputs.package_type == 'all' || github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: NetworkMonitor-Windows-Installer
+          path: |
+            *.msi
+            *.exe
+          retention-days: 30
+
+      - name: Upload Single File
+        if: inputs.package_type == 'single-file' || inputs.package_type == 'all'
+        uses: actions/upload-artifact@v4
+        with:
+          name: NetworkMonitor-Windows-SingleFile
+          path: NetworkMonitor-SingleFile.exe
+          retention-days: 30
+
+      - name: Create release summary
+        run: |
+          Write-Host "=== Windows 构建完成 ==="
+          
+          $summary = @"
+          # NetworkMonitor Windows 构建结果
+          
+          ## 可用版本
+          
+          ### 1. 便携版 (推荐)
+          - 文件: NetworkMonitor-Windows-Portable.zip  
+          - 特点: 解压即用，包含所有依赖
+          - 大小: ~$(if(Test-Path "NetworkMonitor-Windows-Portable.zip"){[math]::Round((Get-Item "NetworkMonitor-Windows-Portable.zip").Length/1MB, 2)}) MB
+          
+          ### 2. 安装包版本
+          - 文件: NetworkMonitor-Setup.msi 或 NetworkMonitor-Setup.exe
+          - 特点: 标准 Windows 安装程序
+          - 包含: 开始菜单快捷方式、桌面快捷方式
+          
+          ### 3. 单文件版本  
+          - 文件: NetworkMonitor-SingleFile.exe
+          - 特点: 单个可执行文件，完全自包含
+          - 大小: ~$(if(Test-Path "NetworkMonitor-SingleFile.exe"){[math]::Round((Get-Item "NetworkMonitor-SingleFile.exe").Length/1MB, 2)}) MB
+          
+          ## 系统要求
+          - Windows 10/11 (x64)
+          - 便携版和单文件版: 无需额外依赖
+          - 安装包版本: 可选择安装 .NET Runtime
+          
+          构建时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')
+          "@
+          
+          $summary | Out-File -FilePath "windows-build-summary.md" -Encoding UTF8
+          Write-Host $summary
+
+      - name: Upload Build Summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: Windows-Build-Summary
+          path: windows-build-summary.md
+          retention-days: 30
