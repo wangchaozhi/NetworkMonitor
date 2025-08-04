@@ -24,6 +24,40 @@ jobs:
       - name: Build for osx-arm64
         run: dotnet publish NetworkMonitor.csproj -c Release -r osx-arm64 --self-contained true -o publish-arm64
 
+      - name: Analyze build outputs
+        run: |
+          echo "=== 分析构建输出 ==="
+          
+          echo "x64 构建输出:"
+          ls -la publish-x64/
+          
+          echo -e "\narm64 构建输出:"
+          ls -la publish-arm64/
+          
+          echo -e "\n=== 检查主程序架构 ==="
+          echo "x64 主程序:"
+          file publish-x64/NetworkMonitor
+          lipo -info publish-x64/NetworkMonitor 2>/dev/null || echo "不是 Mach-O 文件或无法读取架构"
+          
+          echo -e "\narm64 主程序:"
+          file publish-arm64/NetworkMonitor
+          lipo -info publish-arm64/NetworkMonitor 2>/dev/null || echo "不是 Mach-O 文件或无法读取架构"
+          
+          echo -e "\n=== 检查动态库架构 ==="
+          for dylib in publish-x64/*.dylib; do
+            if [ -f "$dylib" ]; then
+              echo "x64 - $(basename "$dylib"):"
+              lipo -info "$dylib" 2>/dev/null || echo "  无法读取架构信息"
+            fi
+          done
+          
+          for dylib in publish-arm64/*.dylib; do
+            if [ -f "$dylib" ]; then
+              echo "arm64 - $(basename "$dylib"):"
+              lipo -info "$dylib" 2>/dev/null || echo "  无法读取架构信息"
+            fi
+          done
+
       - name: Create universal binary and app bundle
         run: |
           # 创建应用包结构
@@ -48,29 +82,77 @@ jobs:
           # 设置可执行权限
           chmod +x NetworkMonitor.app/Contents/MacOS/NetworkMonitor
           
-          # 处理 .dylib 文件 - 需要为每个架构分别处理
+          # 处理 .dylib 文件 - 智能架构检测和合并
           echo "处理动态库..."
           
           # 收集所有 .dylib 文件
-          x64_dylibs=(publish-x64/*.dylib)
-          arm64_dylibs=(publish-arm64/*.dylib)
+          if ls publish-x64/*.dylib 1> /dev/null 2>&1; then
+            for dylib_x64 in publish-x64/*.dylib; do
+              if [ -f "$dylib_x64" ]; then
+                dylib_name=$(basename "$dylib_x64")
+                dylib_arm64="publish-arm64/$dylib_name"
           
-          # 为每个 .dylib 创建 Universal Binary
-          for dylib_x64 in "${x64_dylibs[@]}"; do
-            if [ -f "$dylib_x64" ]; then
-              dylib_name=$(basename "$dylib_x64")
-              dylib_arm64="publish-arm64/$dylib_name"
+                echo "处理 $dylib_name..."
           
-              if [ -f "$dylib_arm64" ]; then
-                echo "合并 $dylib_name..."
-                lipo -create "$dylib_x64" "$dylib_arm64" \
-                  -output "NetworkMonitor.app/Contents/MacOS/$dylib_name"
-              else
-                echo "警告: $dylib_name 在 ARM64 版本中不存在，仅复制 x64 版本"
-                cp "$dylib_x64" "NetworkMonitor.app/Contents/MacOS/"
+                if [ -f "$dylib_arm64" ]; then
+                  # 检查两个文件的架构
+                  x64_arch=$(lipo -info "$dylib_x64" 2>/dev/null | grep -o 'x86_64\|arm64' || echo "")
+                  arm64_arch=$(lipo -info "$dylib_arm64" 2>/dev/null | grep -o 'x86_64\|arm64' || echo "")
+          
+                  echo "  x64 版本架构: ${x64_arch:-未知}"
+                  echo "  arm64 版本架构: ${arm64_arch:-未知}"
+          
+                  # 尝试合并，如果失败则使用备选方案
+                  if lipo -create "$dylib_x64" "$dylib_arm64" -output "NetworkMonitor.app/Contents/MacOS/$dylib_name" 2>/dev/null; then
+                    echo "  ✓ 成功合并 $dylib_name"
+                  else
+                    echo "  ⚠️  无法合并 $dylib_name，使用智能选择..."
+          
+                    # 如果无法合并，选择更合适的版本
+                    # 检查哪个版本的架构更匹配目标
+                    if [[ "$x64_arch" == *"x86_64"* ]] && [[ "$arm64_arch" == *"arm64"* ]]; then
+                      # 理想情况：创建符号链接处理多架构
+                      echo "  创建架构特定的动态库..."
+                      cp "$dylib_arm64" "NetworkMonitor.app/Contents/MacOS/$dylib_name"
+                    elif [[ "$arm64_arch" == *"arm64"* ]]; then
+                      echo "  使用 ARM64 版本"
+                      cp "$dylib_arm64" "NetworkMonitor.app/Contents/MacOS/"
+                    elif [[ "$x64_arch" == *"x86_64"* ]]; then
+                      echo "  使用 x86_64 版本"
+                      cp "$dylib_x64" "NetworkMonitor.app/Contents/MacOS/"
+                    else
+                      # 备选：比较文件大小，使用更大的
+                      if [ $(stat -f%z "$dylib_x64") -ge $(stat -f%z "$dylib_arm64") ]; then
+                        echo "  使用较大的 x64 版本"
+                        cp "$dylib_x64" "NetworkMonitor.app/Contents/MacOS/"
+                      else
+                        echo "  使用较大的 arm64 版本"
+                        cp "$dylib_arm64" "NetworkMonitor.app/Contents/MacOS/"
+                      fi
+                    fi
+                  fi
+                else
+                  echo "  只有 x64 版本，直接复制"
+                  cp "$dylib_x64" "NetworkMonitor.app/Contents/MacOS/"
+                fi
               fi
-            fi
-          done
+            done
+          fi
+          
+          # 检查是否有只在 ARM64 版本中存在的 .dylib
+          if ls publish-arm64/*.dylib 1> /dev/null 2>&1; then
+            for dylib_arm64 in publish-arm64/*.dylib; do
+              if [ -f "$dylib_arm64" ]; then
+                dylib_name=$(basename "$dylib_arm64")
+          
+                # 如果这个文件还没有被处理过
+                if [ ! -f "NetworkMonitor.app/Contents/MacOS/$dylib_name" ]; then
+                  echo "  发现额外的 ARM64 库: $dylib_name"
+                  cp "$dylib_arm64" "NetworkMonitor.app/Contents/MacOS/"
+                fi
+              fi
+            done
+          fi
           
           # 复制其他必要文件（配置文件、资源等）
           if [ -f "publish-arm64/NetworkMonitor.runtimeconfig.json" ]; then
