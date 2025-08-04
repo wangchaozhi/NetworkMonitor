@@ -1,27 +1,18 @@
-﻿name: Build Windows Package
+﻿name: Build Windows
 
 on:
   workflow_dispatch:
-    inputs:
-      package_type:
-        description: '打包类型'
-        type: choice
-        default: 'portable'
-        options:
-          - 'portable'      # 便携版（文件夹）
-          - 'installer'     # 安装包
-          - 'single-file'   # 单文件版本
-          - 'all'          # 所有类型
   push:
-    branches: [ main ]
+    branches: [main]
     paths:
-      - 'windows/**'
-      - '.github/workflows/build-windows.yml'
+      - 'src/**'
+      - '*.csproj'
+      - '**.cs'
 
 jobs:
   build-windows:
     runs-on: windows-latest
-
+    
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -31,409 +22,139 @@ jobs:
         with:
           dotnet-version: '9.0.x'
 
-      - name: Install Windows build tools
-        shell: powershell
+      - name: Build x64 version
         run: |
-          Write-Host "=== 检查 NSIS 安装状态 ==="
+          Write-Host "Building Windows x64..."
+          dotnet publish NetworkMonitor.csproj -c Release -r win-x64 --self-contained true -o publish-x64
+
+      - name: Build x86 version
+        run: |
+          Write-Host "Building Windows x86..."
+          dotnet publish NetworkMonitor.csproj -c Release -r win-x86 --self-contained true -o publish-x86
+
+      - name: Create portable packages
+        run: |
+          Write-Host "Creating portable packages..."
           
-          # 检查 NSIS 是否已安装
-          $nsisPath = "C:\Program Files (x86)\NSIS\makensis.exe"
-          if (Test-Path $nsisPath) {
-            Write-Host "NSIS 已安装"
-            Add-Content $env:GITHUB_ENV "NSIS_PATH=C:\Program Files (x86)\NSIS"
-          } else {
-            Write-Host "NSIS 未安装，尝试安装..."
-            try {
-              choco install nsis -y --no-progress
-              Start-Sleep -Seconds 5
-              if (Test-Path $nsisPath) {
-                Write-Host "NSIS 安装成功"
-                Add-Content $env:GITHUB_ENV "NSIS_PATH=C:\Program Files (x86)\NSIS"
-              } else {
-                Write-Host "NSIS 安装失败"
-                Add-Content $env:GITHUB_ENV "NSIS_PATH="
-              }
-            } catch {
-              Write-Host "NSIS 安装过程中出现异常: $($_.Exception.Message)"
-              Add-Content $env:GITHUB_ENV "NSIS_PATH="
-            }
+          # Create x64 package
+          New-Item -ItemType Directory -Path "package-x64" -Force
+          Copy-Item -Path "publish-x64\*" -Destination "package-x64\" -Recurse
+          
+          # Create README for x64
+          $readme = "NetworkMonitor Windows x64 Portable`n" +
+                    "===================================`n`n" +
+                    "System Requirements:`n" +
+                    "- Windows 10 or later (64-bit)`n" +
+                    "- No additional software required`n`n" +
+                    "Usage:`n" +
+                    "1. Extract files to any folder`n" +
+                    "2. Run NetworkMonitor.exe`n`n" +
+                    "Build Date: $(Get-Date -Format 'yyyy-MM-dd')"
+          
+          $readme | Out-File -FilePath "package-x64\README.txt" -Encoding UTF8
+          
+          # Create x86 package
+          New-Item -ItemType Directory -Path "package-x86" -Force
+          Copy-Item -Path "publish-x86\*" -Destination "package-x86\" -Recurse
+          
+          # Create README for x86
+          $readme32 = $readme.Replace("x64", "x86").Replace("64-bit", "32-bit")
+          $readme32 | Out-File -FilePath "package-x86\README.txt" -Encoding UTF8
+          
+          # Create ZIP files
+          Compress-Archive -Path "package-x64\*" -DestinationPath "NetworkMonitor-Windows-x64.zip" -Force
+          Compress-Archive -Path "package-x86\*" -DestinationPath "NetworkMonitor-Windows-x86.zip" -Force
+
+      - name: Create install scripts
+        run: |
+          Write-Host "Creating installation scripts..."
+          
+          # Install script
+          $installScript = '# NetworkMonitor Installer' + "`n" +
+                          'param(' + "`n" +
+                          '    [string]$InstallPath = "$env:ProgramFiles\NetworkMonitor"' + "`n" +
+                          ')' + "`n`n" +
+                          'Write-Host "Installing NetworkMonitor to $InstallPath"' + "`n`n" +
+                          'if (!(Test-Path $InstallPath)) {' + "`n" +
+                          '    New-Item -ItemType Directory -Path $InstallPath -Force' + "`n" +
+                          '}' + "`n`n" +
+                          'Copy-Item -Path "NetworkMonitor.exe" -Destination $InstallPath -Force' + "`n" +
+                          'Copy-Item -Path "*.dll" -Destination $InstallPath -Force -ErrorAction SilentlyContinue' + "`n`n" +
+                          'Write-Host "Installation completed!"'
+          
+          $installScript | Out-File -FilePath "Install.ps1" -Encoding UTF8
+          
+          # Uninstall script
+          $uninstallScript = '# NetworkMonitor Uninstaller' + "`n" +
+                            'param(' + "`n" +
+                            '    [string]$InstallPath = "$env:ProgramFiles\NetworkMonitor"' + "`n" +
+                            ')' + "`n`n" +
+                            'Write-Host "Uninstalling NetworkMonitor from $InstallPath"' + "`n`n" +
+                            'if (Test-Path $InstallPath) {' + "`n" +
+                            '    Remove-Item $InstallPath -Recurse -Force' + "`n" +
+                            '}' + "`n`n" +
+                            'Write-Host "Uninstallation completed!"'
+          
+          $uninstallScript | Out-File -FilePath "Uninstall.ps1" -Encoding UTF8
+
+      - name: Create installer package
+        run: |
+          Write-Host "Creating installer package..."
+          
+          New-Item -ItemType Directory -Path "installer" -Force
+          Copy-Item -Path "publish-x64\*" -Destination "installer\" -Recurse
+          Copy-Item -Path "Install.ps1" -Destination "installer\"
+          Copy-Item -Path "Uninstall.ps1" -Destination "installer\"
+          
+          $installGuide = "NetworkMonitor Installer Package`n" +
+                         "================================`n`n" +
+                         "Installation Options:`n`n" +
+                         "1. Portable Mode:`n" +
+                         "   - Run NetworkMonitor.exe directly`n`n" +
+                         "2. Install Mode:`n" +
+                         "   - Run PowerShell as Administrator`n" +
+                         "   - Execute: .\Install.ps1`n`n" +
+                         "Uninstall:`n" +
+                         "   - Execute: .\Uninstall.ps1"
+          
+          $installGuide | Out-File -FilePath "installer\INSTALL.txt" -Encoding UTF8
+          
+          Compress-Archive -Path "installer\*" -DestinationPath "NetworkMonitor-Windows-x64-Installer.zip" -Force
+
+      - name: Verify packages
+        run: |
+          Write-Host "Verifying packages..."
+          
+          Get-ChildItem -Path "." -Filter "NetworkMonitor-Windows-*.zip" | ForEach-Object {
+            $size = [math]::Round($_.Length / 1MB, 2)
+            Write-Host "Package: $($_.Name) - Size: ${size} MB"
           }
 
-      - name: Build .NET Applications
-        shell: powershell
+      - name: Test executables
         run: |
-          Write-Host "=== 构建不同版本的 Windows 应用 ==="
+          Write-Host "Testing executables..."
           
-          # 1. 便携版 (Framework-dependent)
-          Write-Host "构建便携版..."
-          dotnet publish NetworkMonitor.csproj `
-            -c Release `
-            -r win-x64 `
-            --self-contained false `
-            -o publish-portable `
-            -p:PublishSingleFile=false
-          
-          # 2. 自包含版本 (Self-contained)
-          Write-Host "构建自包含版本..."
-          dotnet publish NetworkMonitor.csproj `
-            -c Release `
-            -r win-x64 `
-            --self-contained true `
-            -o publish-selfcontained `
-            -p:PublishSingleFile=false `
-            -p:PublishTrimmed=false
-          
-          # 3. 单文件版本 (如果需要)
-          Write-Host "构建单文件版本..."
-          dotnet publish NetworkMonitor.csproj `
-            -c Release `
-            -r win-x64 `
-            --self-contained true `
-            -o publish-singlefile `
-            -p:PublishSingleFile=true `
-            -p:PublishTrimmed=true `
-            -p:IncludeNativeLibrariesForSelfExtract=true
-
-      - name: Analyze build outputs
-        shell: powershell
-        run: |
-          Write-Host "=== 分析构建输出 ==="
-          
-          Write-Host "便携版内容:"
-          Get-ChildItem publish-portable | Format-Table Name, Length, LastWriteTime
-          
-          Write-Host "`n自包含版本内容:"
-          Get-ChildItem publish-selfcontained | Format-Table Name, Length, LastWriteTime
-          
-          Write-Host "`n单文件版本内容:"
-          Get-ChildItem publish-singlefile | Format-Table Name, Length, LastWriteTime
-          
-          # 计算总大小
-          $portableSize = (Get-ChildItem publish-portable -Recurse | Measure-Object -Property Length -Sum).Sum
-          $selfcontainedSize = (Get-ChildItem publish-selfcontained -Recurse | Measure-Object -Property Length -Sum).Sum
-          $singlefileSize = (Get-ChildItem publish-singlefile -Recurse | Measure-Object -Property Length -Sum).Sum
-          
-          Write-Host "`n版本大小对比:"
-          Write-Host "便携版: $([math]::Round($portableSize/1MB, 2)) MB"
-          Write-Host "自包含版: $([math]::Round($selfcontainedSize/1MB, 2)) MB" 
-          Write-Host "单文件版: $([math]::Round($singlefileSize/1MB, 2)) MB"
-
-      - name: Create portable package
-        shell: powershell
-        run: |
-          Write-Host "=== 创建便携版包 ==="
-          
-          # 创建便携版文件夹结构
-          New-Item -ItemType Directory -Path "NetworkMonitor-Portable" -Force
-          
-          # 复制应用文件
-          Copy-Item -Path "publish-selfcontained\*" -Destination "NetworkMonitor-Portable\" -Recurse
-          
-          # 创建启动脚本
-          @"
-          @echo off
-          cd /d "%~dp0"
-          echo Starting Network Monitor...
-          NetworkMonitor.exe %*
-          if errorlevel 1 (
-              echo.
-              echo Error occurred. Press any key to exit...
-              pause >nul
-          )
-          "@ | Out-File -FilePath "NetworkMonitor-Portable\start.bat" -Encoding ASCII
-          
-          # 创建配置文件
-          @"
-          # NetworkMonitor 便携版
-          
-          ## 系统要求
-          - Windows 10/11 (x64)
-          - .NET 9.0 Runtime (自包含版本已包含)
-          
-          ## 使用方法
-          1. 解压到任意目录
-          2. 双击 NetworkMonitor.exe 或 start.bat
-          3. 无需安装，可直接运行
-          
-          ## 文件说明
-          - NetworkMonitor.exe: 主程序
-          - *.dll: 依赖库文件
-          - start.bat: 启动脚本
-          - 配置文件会保存在用户目录下
-          
-          构建时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')
-          "@ | Out-File -FilePath "NetworkMonitor-Portable\README.txt" -Encoding UTF8
-          
-          # 创建 ZIP 包
-          Compress-Archive -Path "NetworkMonitor-Portable\*" -DestinationPath "NetworkMonitor-Windows-Portable.zip" -Force
-
-      - name: Create installer package with NSIS
-        if: inputs.package_type == 'installer' || inputs.package_type == 'all' || github.event_name == 'push'
-        shell: powershell
-        run: |
-          Write-Host "=== 使用 NSIS 创建安装包 ==="
-          
-          if (-not $env:NSIS_PATH -or -not (Test-Path "$env:NSIS_PATH\makensis.exe")) {
-            Write-Host "⚠️  NSIS 不可用，跳过安装包创建"
-            exit 0
+          if (Test-Path "publish-x64\NetworkMonitor.exe") {
+            Write-Host "x64 executable exists"
           }
           
-          Write-Host "使用 NSIS 创建 EXE 安装包..."
-          
-          # 创建 NSIS 脚本
-          $nsisScript = @"
-  !define APPNAME "Network Monitor"
-  !define COMPANYNAME "NetworkMonitor"
-  !define DESCRIPTION "Network monitoring application"
-  !define VERSIONMAJOR 1
-  !define VERSIONMINOR 0
-  !define VERSIONBUILD 0
-  !define HELPURL "https://github.com/wangchaozhi/NetworkMonitor"
-  !define UPDATEURL "https://github.com/wangchaozhi/NetworkMonitor/releases"
-  !define ABOUTURL "https://github.com/wangchaozhi/NetworkMonitor"
-  
-  # 安装程序属性
-  Name "`${APPNAME}"
-  OutFile "NetworkMonitor-Setup.exe"
-  InstallDir "`$PROGRAMFILES64\`${APPNAME}"
-  RequestExecutionLevel admin
-  BrandingText "`${COMPANYNAME}"
+          if (Test-Path "publish-x86\NetworkMonitor.exe") {
+            Write-Host "x86 executable exists"
+          }
 
-# 界面设置
-  !include "MUI2.nsh"
-  !define MUI_ABORTWARNING
-  !define MUI_ICON "`${NSISDIR}\Contrib\Graphics\Icons\modern-install.ico"
-  !define MUI_UNICON "`${NSISDIR}\Contrib\Graphics\Icons\modern-uninstall.ico"
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: NetworkMonitor-Windows-Packages
+          path: |
+            NetworkMonitor-Windows-*.zip
+          retention-days: 30
 
-# 安装页面
-  !insertmacro MUI_PAGE_WELCOME
-  !insertmacro MUI_PAGE_LICENSE "LICENSE.txt"
-  !insertmacro MUI_PAGE_DIRECTORY
-  !insertmacro MUI_PAGE_INSTFILES
-  !insertmacro MUI_PAGE_FINISH
-
-# 卸载页面
-  !insertmacro MUI_UNPAGE_WELCOME
-  !insertmacro MUI_UNPAGE_CONFIRM
-  !insertmacro MUI_UNPAGE_INSTFILES
-  !insertmacro MUI_UNPAGE_FINISH
-
-# 语言
-  !insertmacro MUI_LANGUAGE "English"
-  
-  # 版本信息
-  VIProductVersion "`${VERSIONMAJOR}.`${VERSIONMINOR}.`${VERSIONBUILD}.0"
-  VIAddVersionKey /LANG=`${LANG_ENGLISH} "ProductName" "`${APPNAME}"
-  VIAddVersionKey /LANG=`${LANG_ENGLISH} "CompanyName" "`${COMPANYNAME}"
-  VIAddVersionKey /LANG=`${LANG_ENGLISH} "LegalCopyright" "© `${COMPANYNAME}"
-  VIAddVersionKey /LANG=`${LANG_ENGLISH} "FileDescription" "`${DESCRIPTION}"
-  VIAddVersionKey /LANG=`${LANG_ENGLISH} "FileVersion" "`${VERSIONMAJOR}.`${VERSIONMINOR}.`${VERSIONBUILD}.0"
-  
-  # 安装部分
-  Section "install"
-  # 设置输出路径
-  SetOutPath "`$INSTDIR"
-  
-  # 安装文件
-  File /r "publish-selfcontained\*"
-  
-  # 创建开始菜单快捷方式
-  CreateDirectory "`$SMPROGRAMS\`${APPNAME}"
-  CreateShortCut "`$SMPROGRAMS\`${APPNAME}\`${APPNAME}.lnk" "`$INSTDIR\NetworkMonitor.exe" "" "`$INSTDIR\NetworkMonitor.exe" 0
-  CreateShortCut "`$SMPROGRAMS\`${APPNAME}\Uninstall.lnk" "`$INSTDIR\uninstall.exe" "" "`$INSTDIR\uninstall.exe" 0
-  
-  # 创建桌面快捷方式
-  CreateShortCut "`$DESKTOP\`${APPNAME}.lnk" "`$INSTDIR\NetworkMonitor.exe" "" "`$INSTDIR\NetworkMonitor.exe" 0
-  
-  # 注册表项
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\`${APPNAME}" "DisplayName" "`${APPNAME}"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\`${APPNAME}" "UninstallString" "`$\"`$INSTDIR\uninstall.exe`$\""
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\`${APPNAME}" "QuietUninstallString" "`$\"`$INSTDIR\uninstall.exe`$\" /S"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\`${APPNAME}" "InstallLocation" "`$\"`$INSTDIR`$\""
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\`${APPNAME}" "DisplayIcon" "`$\"`$INSTDIR\NetworkMonitor.exe`$\""
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\`${APPNAME}" "Publisher" "`${COMPANYNAME}"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\`${APPNAME}" "HelpLink" "`${HELPURL}"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\`${APPNAME}" "URLUpdateInfo" "`${UPDATEURL}"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\`${APPNAME}" "URLInfoAbout" "`${ABOUTURL}"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\`${APPNAME}" "DisplayVersion" "`${VERSIONMAJOR}.`${VERSIONMINOR}.`${VERSIONBUILD}"
-  WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\`${APPNAME}" "VersionMajor" `${VERSIONMAJOR}
-  WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\`${APPNAME}" "VersionMinor" `${VERSIONMINOR}
-  WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\`${APPNAME}" "NoModify" 1
-  WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\`${APPNAME}" "NoRepair" 1
-  
-  # 计算安装大小
-  `${GetSize} "`$INSTDIR" "/S=0K" `$0 `$1 `$2
-  IntFmt `$0 "0x%08X" `$0
-  WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\`${APPNAME}" "EstimatedSize" "`$0"
-  
-  # 创建卸载程序
-  WriteUninstaller "`$INSTDIR\uninstall.exe"
-  SectionEnd
-  
-  # 卸载部分
-  Section "uninstall"
-  # 删除文件
-  RMDir /r "`$INSTDIR"
-  
-  # 删除快捷方式
-  Delete "`$SMPROGRAMS\`${APPNAME}\*.*"
-  RMDir "`$SMPROGRAMS\`${APPNAME}"
-  Delete "`$DESKTOP\`${APPNAME}.lnk"
-  
-  # 删除注册表项
-  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\`${APPNAME}"
-  SectionEnd
-
-# 包含必要的函数
-  !include "FileFunc.nsh"
-  !insertmacro GetSize
-  "@
-        
-        # 将脚本保存到文件
-        $nsisScript | Out-File -FilePath "installer.nsi" -Encoding UTF8
-  
-  # 创建简单的许可证文件（如果不存在）
-  if (-not (Test-Path "LICENSE.txt")) {
-  $license = @"
-  MIT License
-  
-  Copyright (c) 2025 NetworkMonitor
-  
-  Permission is hereby granted, free of charge, to any person obtaining a copy
-  of this software and associated documentation files (the "Software"), to deal
-  in the Software without restriction, including without limitation the rights
-  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-  copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-  
-  The above copyright notice and this permission notice shall be included in all
-  copies or substantial portions of the Software.
-  
-  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-  SOFTWARE.
-  "@
-          $license | Out-File -FilePath "LICENSE.txt" -Encoding UTF8
-  }
-  
-  try {
-  # 编译 NSIS 安装包
-  & "$env:NSIS_PATH\makensis.exe" "installer.nsi"
-  
-  if ($LASTEXITCODE -eq 0 -and (Test-Path "NetworkMonitor-Setup.exe")) {
-  Write-Host "✓ NSIS 安装包创建成功"
-  
-  $setupFile = Get-Item "NetworkMonitor-Setup.exe"
-Write-Host "安装包大小: $([math]::Round($setupFile.Length/1MB, 2)) MB"
-} else {
-Write-Host "✗ NSIS 编译失败，退出码: $LASTEXITCODE"
-}
-} catch {
-Write-Host "✗ NSIS 处理异常: $($_.Exception.Message)"
-}
-
-- name: Create single-file package
-  if: inputs.package_type == 'single-file' || inputs.package_type == 'all'
-  shell: powershell
-  run: |
-    Write-Host "=== 创建单文件包 ==="
-    
-    # 单文件版本通常只有一个 .exe 文件
-    $singleFile = Get-ChildItem "publish-singlefile\NetworkMonitor.exe"
-    
-    if ($singleFile) {
-      Copy-Item $singleFile.FullName "NetworkMonitor-SingleFile.exe"
-    
-      Write-Host "单文件版本信息:"
-      Write-Host "文件大小: $([math]::Round($singleFile.Length/1MB, 2)) MB"
-      Write-Host "包含运行时: 是"
-      Write-Host "依赖: 无 (完全自包含)"
-    }
-
-- name: Verify packages
-  shell: powershell
-  run: |
-    Write-Host "=== 验证所有包 ==="
-    
-    # 列出所有生成的包
-    Get-ChildItem -Name "*.zip", "*.msi", "*.exe" | ForEach-Object {
-      $file = Get-Item $_
-      Write-Host "$($file.Name): $([math]::Round($file.Length/1MB, 2)) MB"
-    }
-    
-    # 测试便携版可执行性
-    Write-Host "`n测试便携版启动..."
-    $process = Start-Process -FilePath "NetworkMonitor-Portable\NetworkMonitor.exe" -ArgumentList "--help" -Wait -PassThru -WindowStyle Hidden
-    Write-Host "便携版退出码: $($process.ExitCode)"
-
-- name: Upload Portable Package
-  uses: actions/upload-artifact@v4
-  with:
-    name: NetworkMonitor-Windows-Portable
-    path: NetworkMonitor-Windows-Portable.zip
-    retention-days: 30
-
-- name: Upload Installer
-  if: inputs.package_type == 'installer' || inputs.package_type == 'all' || github.event_name == 'push'
-  uses: actions/upload-artifact@v4
-  with:
-    name: NetworkMonitor-Windows-Installer
-    path: |
-      NetworkMonitor-Setup.exe
-      LICENSE.txt
-    retention-days: 30
-
-- name: Upload Single File
-  if: inputs.package_type == 'single-file' || inputs.package_type == 'all'
-  uses: actions/upload-artifact@v4
-  with:
-    name: NetworkMonitor-Windows-SingleFile
-    path: NetworkMonitor-SingleFile.exe
-    retention-days: 30
-
-- name: Create release summary
-  shell: powershell
-  run: |
-    Write-Host "=== Windows 构建完成 ==="
-    
-    $summary = @"
-    # NetworkMonitor Windows 构建结果
-    
-    ## 可用版本
-    
-    ### 1. 便携版 (推荐)
-    - 文件: NetworkMonitor-Windows-Portable.zip  
-    - 特点: 解压即用，包含所有依赖
-    - 大小: ~$(if(Test-Path "NetworkMonitor-Windows-Portable.zip"){[math]::Round((Get-Item "NetworkMonitor-Windows-Portable.zip").Length/1MB, 2)}) MB
-    
-    ### 2. 安装包版本
-    - 文件: NetworkMonitor-Setup.exe
-    - 特点: 标准 Windows 安装程序 (NSIS)
-    - 包含: 开始菜单快捷方式、桌面快捷方式、卸载程序
-    
-    ### 3. 单文件版本  
-    - 文件: NetworkMonitor-SingleFile.exe
-    - 特点: 单个可执行文件，完全自包含
-    - 大小: ~$(if(Test-Path "NetworkMonitor-SingleFile.exe"){[math]::Round((Get-Item "NetworkMonitor-SingleFile.exe").Length/1MB, 2)}) MB
-    
-    ## 系统要求
-    - Windows 10/11 (x64)
-    - 便携版和单文件版: 无需额外依赖
-    - 安装包版本: 可选择安装 .NET Runtime
-    
-    构建时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')
-    "@
-    
-    $summary | Out-File -FilePath "windows-build-summary.md" -Encoding UTF8
-    Write-Host $summary
-
-- name: Upload Build Summary
-  uses: actions/upload-artifact@v4
-  with:
-    name: Windows-Build-Summary
-    path: windows-build-summary.md
-    retention-days: 30
+      - name: Upload scripts
+        uses: actions/upload-artifact@v4
+        with:
+          name: NetworkMonitor-Windows-Scripts
+          path: |
+            Install.ps1
+            Uninstall.ps1
+          retention-days: 30
