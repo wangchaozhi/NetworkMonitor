@@ -359,10 +359,14 @@ jobs:
           # 验证 Universal Binary 的完整性
           echo ""
           echo "🔍 Universal Binary 完整性检查:"
-          if lipo -verify_arch x86_64 arm64 NetworkMonitor.app/Contents/MacOS/NetworkMonitor; then
+          # 使用 lipo -info 检查架构
+          arch_info=$(lipo -info NetworkMonitor.app/Contents/MacOS/NetworkMonitor)
+          echo "架构信息: $arch_info"
+          
+          if echo "$arch_info" | grep -q "x86_64" && echo "$arch_info" | grep -q "arm64"; then
             echo "✅ Universal Binary 包含 x86_64 和 arm64 架构"
           else
-            echo "❌ Universal Binary 架构验证失败"
+            echo "❌ Universal Binary 缺少必要的架构"
             exit 1
           fi
           
