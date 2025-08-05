@@ -12,15 +12,15 @@ namespace NetworkMonitor
 {
     public partial class MainWindow : Window
     {
-        private DispatcherTimer _timer;
-        private NetworkInterface _activeInterface;
+        private DispatcherTimer _timer = null!; // 使用 null! 抑制警告，因为会在 InitializeNetworkMonitoring 中初始化
+        private NetworkInterface? _activeInterface; // 声明为可空，因为初始时确实为 null
         private long _previousBytesReceived;
         private long _previousBytesSent;
         private DateTime _previousTime;
         private long _totalBytesReceived;
         private long _totalBytesSent;
-        private string _currentPlatform;
-        private List<NetworkInterface> _availableInterfaces;
+        private string _currentPlatform = string.Empty; // 初始化为空字符串
+        private List<NetworkInterface> _availableInterfaces = new(); // 直接初始化
 
         public MainWindow()
         {
@@ -429,7 +429,7 @@ namespace NetworkMonitor
             }
         }
 
-        private void UpdateNetworkStats(object sender, EventArgs e)
+        private void UpdateNetworkStats(object? sender, EventArgs e)
         {
             if (_activeInterface == null) return;
 
@@ -539,9 +539,9 @@ namespace NetworkMonitor
     // 网络接口数据模型
     public class NetworkInterfaceItem
     {
-        public NetworkInterface Interface { get; set; }
-        public string DisplayName { get; set; }
-        public string Description { get; set; }
+        public required NetworkInterface Interface { get; set; }
+        public required string DisplayName { get; set; }
+        public required string Description { get; set; }
 
         public override string ToString()
         {
