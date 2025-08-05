@@ -1,9 +1,9 @@
 name: Build macOS Universal DMG
 
 on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:
+    push:
+      branches: [ main ]
+    workflow_dispatch:
 
 jobs:
   build-macos:
@@ -213,6 +213,35 @@ jobs:
           echo "应用包结构:"
           find NetworkMonitor.app -type f -exec ls -la {} \;
 
+      - name: Sign app bundle with ad-hoc signature
+        run: |
+          echo "=== 开始 Ad-hoc 签名 ==="
+          
+          # 对整个应用包进行 ad-hoc 签名
+          echo "对应用包进行临时签名..."
+          codesign --force --deep --sign - NetworkMonitor.app
+          
+          # 验证签名
+          echo "验证签名结果..."
+          if codesign --verify NetworkMonitor.app; then
+            echo "✅ 应用签名成功"
+          else
+            echo "❌ 应用签名失败"
+            exit 1
+          fi
+          
+          # 显示签名详细信息
+          echo "签名详细信息:"
+          codesign --display --verbose=2 NetworkMonitor.app
+          
+          # 验证主程序签名
+          echo "主程序签名信息:"
+          codesign --display --verbose=2 NetworkMonitor.app/Contents/MacOS/NetworkMonitor
+          
+          # 检查所有签名文件
+          echo "检查所有已签名的组件:"
+          find NetworkMonitor.app -type f \( -name "*.dylib" -o -name "NetworkMonitor" \) -exec echo "检查: {}" \; -exec codesign --verify {} \; 2>/dev/null || true
+
       - name: Verify app bundle
         run: |
           echo "验证应用包..."
@@ -231,9 +260,13 @@ jobs:
             fi
           done
           
-          # 测试应用是否可以启动（仅验证，不实际运行）
-          echo "验证应用包完整性..."
-          codesign -v NetworkMonitor.app || echo "警告: 应用未签名"
+          # 最终签名验证
+          echo "最终签名验证..."
+          codesign --verify --verbose NetworkMonitor.app
+          
+          # 显示签名状态
+          echo "签名状态摘要:"
+          codesign --display --verbose=1 NetworkMonitor.app
 
       - name: Create enhanced DMG
         run: |
@@ -266,32 +299,43 @@ jobs:
               -ov -format UDZO NetworkMonitor-Universal.dmg
           }
 
-      - name: Verify DMG
+      - name: Verify DMG and signing
         run: |
-          echo "验证 DMG..."
+          echo "=== 验证 DMG 和签名 ==="
           
           # 检查 DMG 文件
+          echo "DMG 文件信息:"
           ls -lh NetworkMonitor-Universal.dmg
           
           # 验证 DMG 完整性
+          echo "验证 DMG 完整性..."
           hdiutil verify NetworkMonitor-Universal.dmg
           
-          # 测试挂载
-          echo "测试 DMG 挂载..."
+          # 测试挂载并验证内部应用的签名
+          echo "测试 DMG 挂载并验证签名..."
           hdiutil attach NetworkMonitor-Universal.dmg -readonly -nobrowse -mountpoint /tmp/test-mount
-          ls -la /tmp/test-mount
           
-          # 验证应用在 DMG 中的架构
+          echo "DMG 内容:"
+          ls -la /tmp/test-mount/
+          
+          # 验证 DMG 中应用的架构
           echo "DMG 中应用的架构:"
           lipo -info /tmp/test-mount/NetworkMonitor.app/Contents/MacOS/NetworkMonitor
+          
+          # 验证 DMG 中应用的签名
+          echo "DMG 中应用的签名状态:"
+          codesign --verify --verbose /tmp/test-mount/NetworkMonitor.app
+          codesign --display --verbose=2 /tmp/test-mount/NetworkMonitor.app
           
           # 卸载
           hdiutil detach /tmp/test-mount
           
           # 计算哈希值
-          echo "DMG 信息:"
+          echo "DMG 信息摘要:"
           echo "SHA256: $(shasum -a 256 NetworkMonitor-Universal.dmg | cut -d' ' -f1)"
           echo "大小: $(ls -lh NetworkMonitor-Universal.dmg | awk '{print $5}')"
+          
+          echo "✅ 构建完成！应用已使用 ad-hoc 签名，用户首次运行时需要右键点击选择'打开'。"
 
       - name: Upload DMG Artifact
         uses: actions/upload-artifact@v4
