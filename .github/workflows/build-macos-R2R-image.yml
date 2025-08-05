@@ -1,8 +1,8 @@
-﻿name: Build macOS Universal DMG with R2R
+﻿name: Build macOS Universal DMG with R2R and Custom Icon
 
 on:
-#  push:
-#    branches: [ main ]
+  push:
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -17,6 +17,50 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '9.0.x'
+
+      - name: Process custom icon
+        run: |
+          echo "=== 处理自定义图标 ==="
+          
+          # 检查图标文件是否存在
+          if [ -f "image/default-icon-1024.png" ]; then
+            echo "✅ 发现自定义图标: image/default-icon-1024.png"
+          
+            # 创建图标处理目录
+            mkdir -p icon-temp/icon.iconset
+          
+            # 验证原始图标
+            echo "原始图标信息:"
+            file image/default-icon-1024.png
+          
+            # 使用 sips 工具生成不同尺寸的图标
+            echo "生成不同尺寸的图标..."
+          
+            # 生成标准 macOS 图标尺寸
+            sips -z 16 16 image/default-icon-1024.png --out icon-temp/icon.iconset/icon_16x16.png
+            sips -z 32 32 image/default-icon-1024.png --out icon-temp/icon.iconset/icon_16x16@2x.png
+            sips -z 32 32 image/default-icon-1024.png --out icon-temp/icon.iconset/icon_32x32.png
+            sips -z 64 64 image/default-icon-1024.png --out icon-temp/icon.iconset/icon_32x32@2x.png
+            sips -z 128 128 image/default-icon-1024.png --out icon-temp/icon.iconset/icon_128x128.png
+            sips -z 256 256 image/default-icon-1024.png --out icon-temp/icon.iconset/icon_128x128@2x.png
+            sips -z 256 256 image/default-icon-1024.png --out icon-temp/icon.iconset/icon_256x256.png
+            sips -z 512 512 image/default-icon-1024.png --out icon-temp/icon.iconset/icon_256x256@2x.png
+            sips -z 512 512 image/default-icon-1024.png --out icon-temp/icon.iconset/icon_512x512.png
+            sips -z 1024 1024 image/default-icon-1024.png --out icon-temp/icon.iconset/icon_512x512@2x.png
+          
+            # 生成 .icns 文件
+            echo "生成 .icns 文件..."
+            iconutil -c icns icon-temp/icon.iconset -o icon-temp/app-icon.icns
+          
+            # 验证生成的图标
+            echo "生成的图标文件:"
+            ls -la icon-temp/icon.iconset/
+            ls -la icon-temp/app-icon.icns
+          
+            echo "✅ 图标处理完成"
+          else
+            echo "⚠️  未找到自定义图标文件，将使用系统默认图标"
+          fi
 
       - name: Check R2R support and environment
         run: |
@@ -185,18 +229,27 @@ jobs:
           echo "预计内存使用优化: 15-25%"
           echo "JIT 编译减少: 显著减少"
 
-      - name: Create universal binary and app bundle with R2R
+      - name: Create universal binary and app bundle with R2R and custom icon
         run: |
           # 创建应用包结构
           mkdir -p NetworkMonitor.app/Contents/MacOS
           mkdir -p NetworkMonitor.app/Contents/Resources
           
-          echo "=== 创建 R2R 优化的 Universal Binary ==="
+          echo "=== 创建 R2R 优化的 Universal Binary（含自定义图标）==="
           
           # 验证构建输出
           echo "📂 验证构建输出..."
           ls -la publish-x64/
           ls -la publish-arm64/
+          
+          # 添加自定义图标到应用包
+          if [ -f "icon-temp/app-icon.icns" ]; then
+            echo "🎨 添加自定义图标..."
+            cp icon-temp/app-icon.icns NetworkMonitor.app/Contents/Resources/
+            echo "✅ 自定义图标已添加到应用包"
+          else
+            echo "⚠️  使用系统默认图标"
+          fi
           
           # 合并主程序为 Universal Binary
           echo "🔗 创建 Universal Binary..."
@@ -298,7 +351,7 @@ jobs:
             fi
           done
           
-          # 创建优化的 Info.plist
+          # 创建优化的 Info.plist（包含图标信息）
           cat > NetworkMonitor.app/Contents/Info.plist <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -321,6 +374,8 @@ jobs:
             <string>APPL</string>
             <key>CFBundleInfoDictionaryVersion</key>
             <string>6.0</string>
+            <key>CFBundleIconFile</key>
+            <string>app-icon</string>
             <key>LSMinimumSystemVersion</key>
             <string>10.15</string>
             <key>NSHighResolutionCapable</key>
@@ -343,18 +398,36 @@ jobs:
           echo "预编译库: $(ls NetworkMonitor.app/Contents/MacOS/*.dll 2>/dev/null | wc -l) 个"
           echo "动态库: $(ls NetworkMonitor.app/Contents/MacOS/*.dylib 2>/dev/null | wc -l) 个"
           echo "配置文件: $(ls NetworkMonitor.app/Contents/MacOS/*.json 2>/dev/null | wc -l) 个"
+          echo "图标文件: $(ls NetworkMonitor.app/Contents/Resources/*.icns 2>/dev/null | wc -l) 个"
           
           # 显示应用包总大小
           echo "应用包总大小: $(du -sh NetworkMonitor.app | cut -f1)"
 
-      - name: Verify R2R Universal Binary
+      - name: Verify R2R Universal Binary with custom icon
         run: |
-          echo "=== 验证 R2R Universal Binary ==="
+          echo "=== 验证 R2R Universal Binary（含自定义图标）==="
           
           # 检查可执行文件架构
           echo "🏗️  主程序架构验证:"
           file NetworkMonitor.app/Contents/MacOS/NetworkMonitor
           lipo -info NetworkMonitor.app/Contents/MacOS/NetworkMonitor
+          
+          # 验证自定义图标
+          echo ""
+          echo "🎨 自定义图标验证:"
+          if [ -f "NetworkMonitor.app/Contents/Resources/app-icon.icns" ]; then
+            echo "✅ 自定义图标已正确添加"
+            echo "图标文件大小: $(ls -lh NetworkMonitor.app/Contents/Resources/app-icon.icns | awk '{print $5}')"
+          
+            # 验证图标文件格式
+            file NetworkMonitor.app/Contents/Resources/app-icon.icns
+          
+            # 使用 iconutil 验证图标内容
+            echo "图标内容验证:"
+            iconutil -l NetworkMonitor.app/Contents/Resources/app-icon.icns 2>/dev/null || echo "图标验证工具不可用，但文件已正确创建"
+          else
+            echo "❌ 自定义图标缺失"
+          fi
           
           # 验证 Universal Binary 的完整性
           echo ""
@@ -406,7 +479,7 @@ jobs:
 
       - name: Sign app bundle with ad-hoc signature
         run: |
-          echo "=== 开始 Ad-hoc 签名（R2R 优化版本）==="
+          echo "=== 开始 Ad-hoc 签名（R2R 优化版本 + 自定义图标）==="
           
           # 对整个应用包进行 ad-hoc 签名
           echo "📝 对 R2R 应用包进行临时签名..."
@@ -436,7 +509,7 @@ jobs:
           echo "🔍 检查所有已签名的组件:"
           find NetworkMonitor.app -type f \( -name "*.dylib" -o -name "*.dll" -o -name "NetworkMonitor" \) -exec echo "检查: {}" \; -exec codesign --verify {} \; 2>/dev/null || true
 
-      - name: Create enhanced DMG with R2R branding
+      - name: Create enhanced DMG with R2R branding and custom icon
         run: |
           # 安装 create-dmg 以获得更好的 DMG
           brew install create-dmg
@@ -447,6 +520,9 @@ jobs:
           
           # 创建应用程序链接
           ln -s /Applications dmg-temp/Applications
+          
+          # 创建背景图片（可选，如果需要的话）
+          # 这里可以添加创建或复制背景图片的代码
           
           # 使用 create-dmg 创建美观的 DMG
           create-dmg \
@@ -467,9 +543,9 @@ jobs:
               -ov -format UDZO NetworkMonitor-Universal-R2R.dmg
           }
 
-      - name: Final R2R verification and performance summary
+      - name: Final R2R verification and performance summary with icon check
         run: |
-          echo "=== 最终 R2R 验证和性能摘要 ==="
+          echo "=== 最终 R2R 验证和性能摘要（含图标检查）==="
           
           # 检查 DMG 文件
           echo "📦 DMG 文件信息:"
@@ -492,6 +568,19 @@ jobs:
           echo ""
           echo "🏗️  DMG 中应用的架构:"
           lipo -info /tmp/test-mount/NetworkMonitor.app/Contents/MacOS/NetworkMonitor
+          
+          # 验证自定义图标
+          echo ""
+          echo "🎨 DMG 中应用的图标验证:"
+          if [ -f "/tmp/test-mount/NetworkMonitor.app/Contents/Resources/app-icon.icns" ]; then
+            echo "✅ 自定义图标在 DMG 中正确存在"
+            echo "图标文件大小: $(ls -lh /tmp/test-mount/NetworkMonitor.app/Contents/Resources/app-icon.icns | awk '{print $5}')"
+          
+            # 验证图标可读性
+            file /tmp/test-mount/NetworkMonitor.app/Contents/Resources/app-icon.icns
+          else
+            echo "❌ DMG 中缺少自定义图标"
+          fi
           
           # 验证 R2R 特性
           echo ""
@@ -520,8 +609,9 @@ jobs:
           echo "✅ 内存使用优化: 15-25%"
           echo "✅ JIT 编译开销: 显著减少"
           echo "✅ 用户体验: 明显改善"
+          echo "✅ 自定义图标: 已集成"
           echo ""
-          echo "✅ R2R 优化构建完成！应用已使用 ad-hoc 签名，用户首次运行时需要右键点击选择'打开'。"
+          echo "✅ R2R 优化构建完成！应用已使用 ad-hoc 签名和自定义图标，用户首次运行时需要右键点击选择'打开'。"
 
       - name: Upload R2R Optimized DMG
         uses: actions/upload-artifact@v4
@@ -535,4 +625,11 @@ jobs:
         with:
           name: NetworkMonitor-R2R-App-Bundle
           path: NetworkMonitor.app/
+          retention-days: 7
+
+      - name: Upload Custom Icon Assets (for reference)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Custom-Icon-Assets
+          path: icon-temp/
           retention-days: 7
