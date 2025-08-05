@@ -2,12 +2,12 @@
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - 'src/**'
-      - '*.csproj'
-      - '**.cs'
+#  push:
+#    branches: [main]
+#    paths:
+#      - 'src/**'
+#      - '*.csproj'
+#      - '**.cs'
 
 jobs:
   build-windows:
